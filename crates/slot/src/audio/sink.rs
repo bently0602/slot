@@ -25,4 +25,8 @@ impl std::error::Error for AudioError {}
 pub trait AudioSink: Send {
     fn open(&mut self, sample_rate: u32) -> Result<(), AudioError>;
     fn ring(&self) -> Arc<Ring>;
+    fn configure_route(&mut self, _route: super::AudioRoute) {}
+    fn hdmi_active(&self) -> bool {
+        false
+    }
 }

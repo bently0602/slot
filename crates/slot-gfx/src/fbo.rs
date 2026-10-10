@@ -26,6 +26,7 @@ pub struct Compositor {
     u_bezel_gain: gl::types::GLint,
     u_bezel_alpha: gl::types::GLint,
     bezel: Option<gl::types::GLuint>,
+    hdmi: Option<(crate::OutputScale, u8)>,
 }
 
 impl Compositor {
@@ -90,6 +91,7 @@ impl Compositor {
                 u_bezel_gain,
                 u_bezel_alpha,
                 bezel: None,
+                hdmi: None,
             })
         }
     }
@@ -152,7 +154,13 @@ impl Compositor {
     }
 
     pub fn fit(&mut self, window: (u32, u32)) {
-        let size = canvas_size(window);
+        let size = match self.hdmi {
+            Some((scale, margin)) => {
+                let (_, _, w, h) = crate::hdmi_rect(window, scale, margin, 0.0);
+                canvas_for_rect(w, h)
+            }
+            None => canvas_size(window),
+        };
         if size == self.size {
             return;
         }
@@ -258,8 +266,11 @@ impl Compositor {
     }
 
     pub fn end_frame(&mut self, window: (u32, u32)) {
-        let framed = crate::bezel::framed(window);
-        let (x, mut y, w, h) = blit_rect(window, self.shake);
+        let framed = self.hdmi.is_none() && crate::bezel::framed(window);
+        let (x, mut y, w, h) = match self.hdmi {
+            Some((scale, margin)) => crate::hdmi_rect(window, scale, margin, self.shake),
+            None => blit_rect(window, self.shake),
+        };
         let drop = if framed {
             crate::bezel::lifted_rect(window, self.lift).1
         } else {
@@ -320,6 +331,10 @@ impl Compositor {
 }
 
 impl Compositor {
+    pub fn set_hdmi_scaling(&mut self, scale: Option<(crate::OutputScale, u8)>) {
+        self.hdmi = scale;
+    }
+
     fn blit_part(&self, x: i32, y: i32, w: i32, h: i32, uv: [f32; 4]) {
         unsafe {
             gl::Viewport(x, y, w, h);
@@ -331,6 +346,10 @@ impl Compositor {
 
 pub fn canvas_size(window: (u32, u32)) -> (u32, u32) {
     let (_, _, w, h) = blit_rect(window, 0.0);
+    canvas_for_rect(w, h)
+}
+
+fn canvas_for_rect(w: i32, h: i32) -> (u32, u32) {
     let (w, h) = (w.max(1) as u32, h.max(1) as u32);
     if w % OUT_W == 0 && h % OUT_H == 0 && w / OUT_W == h / OUT_H {
         (OUT_W, OUT_H)

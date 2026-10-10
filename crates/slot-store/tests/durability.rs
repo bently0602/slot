@@ -167,6 +167,27 @@ fn a_first_boot_rumbles_and_fast_forwards_silently_at_the_default() {
     assert!(!s.colour_correction, "boots with the picture tinted");
     assert_eq!(s.shader_gba, Shader::Grid);
     assert_eq!(s.shader_gb, Shader::Simpletex);
+    assert!(!s.coverflow);
+}
+
+#[test]
+fn coverflow_round_trips_and_bad_values_keep_existing_settings() {
+    let d = tmp_root();
+    let s = SlotState {
+        coverflow: true,
+        brightness: 3,
+        ..SlotState::default()
+    };
+    write_slot_state(d.path(), &s).unwrap();
+    assert_eq!(read_slot_state(d.path()), s);
+    let path = d.path().join("Config/slot.state");
+    let text = std::fs::read_to_string(&path).unwrap();
+    for line in ["", "coverflow=2\n", "coverflow=invalid\n"] {
+        std::fs::write(&path, text.replace("coverflow=1\n", line)).unwrap();
+        let loaded = read_slot_state(d.path());
+        assert!(!loaded.coverflow);
+        assert_eq!(loaded.brightness, 3);
+    }
 }
 
 #[test]
@@ -200,7 +221,14 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             turbo: true,
             rewind: true,
             gb_palettes: false,
+            coverflow: false,
             gb_palette: GbPalette::DEFAULT,
+            hdmi_auto: true,
+            hdmi_1080p: false,
+            hdmi_scale: slot_store::HdmiScale::Fit,
+            hdmi_margin: 0,
+            docked_lid: true,
+            audio_output: slot_store::AudioOutput::Auto,
         }
     );
 }

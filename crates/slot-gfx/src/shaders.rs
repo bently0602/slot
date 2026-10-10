@@ -33,6 +33,7 @@ attribute vec2 a_pos;
 uniform vec4 u_rect;
 uniform vec2 u_target;
 uniform vec2 u_turn;
+uniform vec2 u_yaw;
 varying vec2 v_uv;
 void main() {
     v_uv = a_pos;
@@ -40,8 +41,12 @@ void main() {
     vec2 local = a_pos * u_rect.zw - mid;
     vec2 turned = vec2(u_turn.x * local.x - u_turn.y * local.y,
                        u_turn.y * local.x + u_turn.x * local.y);
-    vec2 p = (u_rect.xy + a_pos * u_rect.zw + (turned - local)) / u_target;
-    gl_Position = vec4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
+    vec2 p = (u_rect.xy + mid) / u_target;
+    // Preserve homogeneous depth so UVs interpolate correctly across the angled face.
+    float depth = 1.0 - u_yaw.y * turned.x / 600.0;
+    vec2 centre = vec2(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0);
+    vec2 offset = vec2(u_yaw.x * turned.x, -turned.y) * 2.0 / u_target;
+    gl_Position = vec4(centre * depth + offset, 0.0, depth);
 }
 "#;
 

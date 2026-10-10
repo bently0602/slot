@@ -9,6 +9,7 @@ pub const API_VERSION: c_uint = 1;
 pub const GET_CAN_DUPE: c_uint = 3;
 pub const GET_SYSTEM_DIRECTORY: c_uint = 9;
 pub const SET_PIXEL_FORMAT: c_uint = 10;
+pub const SET_DISK_CONTROL_INTERFACE: c_uint = 13;
 pub const GET_VARIABLE: c_uint = 15;
 pub const SET_VARIABLES: c_uint = 16;
 pub const GET_VARIABLE_UPDATE: c_uint = 17;
@@ -40,6 +41,28 @@ pub struct GameInfo {
     pub data: *const c_void,
     pub size: usize,
     pub meta: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DiskControl {
+    pub set_eject_state: Option<unsafe extern "C" fn(bool) -> bool>,
+    pub get_eject_state: Option<unsafe extern "C" fn() -> bool>,
+    pub get_image_index: Option<unsafe extern "C" fn() -> c_uint>,
+    pub set_image_index: Option<unsafe extern "C" fn(c_uint) -> bool>,
+    pub get_num_images: Option<unsafe extern "C" fn() -> c_uint>,
+    pub replace_image_index: Option<unsafe extern "C" fn(c_uint, *const GameInfo) -> bool>,
+    pub add_image_index: Option<unsafe extern "C" fn() -> bool>,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct SystemInfo {
+    pub library_name: *const c_char,
+    pub library_version: *const c_char,
+    pub valid_extensions: *const c_char,
+    pub need_fullpath: bool,
+    pub block_extract: bool,
 }
 
 #[repr(C)]
@@ -126,6 +149,7 @@ pub type InputPollFn = unsafe extern "C" fn();
 pub type InputStateFn = unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16;
 
 pub struct Api {
+    pub get_system_info: unsafe extern "C" fn(*mut SystemInfo),
     pub init: unsafe extern "C" fn(),
     pub deinit: unsafe extern "C" fn(),
     pub api_version: unsafe extern "C" fn() -> c_uint,
@@ -156,6 +180,7 @@ impl Api {
             };
         }
         Ok(Api {
+            get_system_info: get!("retro_get_system_info"),
             init: get!("retro_init"),
             deinit: get!("retro_deinit"),
             api_version: get!("retro_api_version"),

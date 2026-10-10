@@ -43,6 +43,7 @@ fn label_band(c: &Cart) -> (f32, f32) {
     let (y, h) = match c.platform {
         Platform::Gba => (LABEL_Y as f32, LABEL_H as f32),
         Platform::Gb | Platform::Gbc => (GB_LABEL_Y as f32, GB_LABEL_H as f32),
+        Platform::Psx => (34.0, 268.0),
     };
     let k = seated_box(c.platform).1 as f32 / cart_box(c.platform).1 as f32;
     (y * k, h * k)
@@ -60,7 +61,8 @@ fn quad(d: &Draw) -> Quad {
     match *d {
         Draw::Rect { x, y, w, h, .. }
         | Draw::Tex { x, y, w, h, .. }
-        | Draw::Turned { x, y, w, h, .. } => Quad { x, y, w, h },
+        | Draw::Turned { x, y, w, h, .. }
+        | Draw::Yawed { x, y, w, h, .. } => Quad { x, y, w, h },
         Draw::Game | Draw::Shot { .. } => Quad {
             x: 0.0,
             y: 0.0,
@@ -109,7 +111,7 @@ fn as_lip(d: &Draw) -> Option<Quad> {
 
 fn alpha(d: &Draw) -> f32 {
     match *d {
-        Draw::Rect { colour, .. } => colour[3],
+        Draw::Rect { colour, .. } | Draw::Yawed { colour, .. } => colour[3],
         Draw::Tex { alpha, .. } | Draw::Turned { alpha, .. } => alpha,
         Draw::Game | Draw::Shot { .. } => 1.0,
     }

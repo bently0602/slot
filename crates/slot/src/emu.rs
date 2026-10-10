@@ -72,6 +72,7 @@ pub struct EmuHandle {
 }
 
 enum Cmd {
+    Disc(usize),
     Load(Vec<u8>),
     Save(Sender<Vec<u8>>),
     Sav(Sender<Option<Vec<u8>>>),
@@ -83,6 +84,9 @@ enum Cmd {
 }
 
 struct Shared {
+    disc_index: AtomicU32,
+    disc_count: AtomicU32,
+    disc_failed: AtomicBool,
     input: AtomicU16,
     speed: AtomicU8,
     observed: AtomicU8,
@@ -117,6 +121,18 @@ struct Clock {
 }
 
 impl EmuHandle {
+    pub fn discs(&self) -> (usize, usize, bool) {
+        (
+            self.shared.disc_index.load(Ordering::Acquire) as usize,
+            self.shared.disc_count.load(Ordering::Acquire) as usize,
+            self.shared.disc_failed.load(Ordering::Acquire),
+        )
+    }
+
+    pub fn change_disc(&self, index: usize) {
+        self.shared.disc_failed.store(false, Ordering::Release);
+        request(&self.cmds, &self.shared, Cmd::Disc(index));
+    }
     pub fn spawn(
         core: Box<dyn RetroCore>,
         rom: PathBuf,
@@ -150,6 +166,9 @@ impl EmuHandle {
         let link = core.net();
         let frames = Frames::new((GBA_W * GBA_H * 4) as usize);
         let shared = Arc::new(Shared {
+            disc_index: AtomicU32::new(0),
+            disc_count: AtomicU32::new(0),
+            disc_failed: AtomicBool::new(false),
             input: AtomicU16::new(0),
             speed: AtomicU8::new(Speed::Paused as u8),
             observed: AtomicU8::new(Speed::Paused as u8),
@@ -508,11 +527,19 @@ impl Worker {
             hz => hz as f64,
         };
         let core_hz = match av.fps {
+            _ if core.full_joypad() => av.sample_rate,
             fps if fps > 0.0 => av.sample_rate / (fps * PRESENT.as_secs_f64()),
             _ => av.sample_rate,
         };
         let mut resampler = Resampler::new(core_hz, device_hz);
         ring.clear_faults();
+        let (disc_index, disc_count) = core.discs();
+        self.shared
+            .disc_index
+            .store(disc_index as u32, Ordering::Release);
+        self.shared
+            .disc_count
+            .store(disc_count as u32, Ordering::Release);
         self.shared
             .state
             .store(CoreState::Ready as u8, Ordering::Release);
@@ -532,6 +559,7 @@ impl Worker {
         let mut rate = TickRate::new(Instant::now(), 0);
         let mut stalled = false;
         let mut turbo_frame = 0u32;
+        let mut frame_credit = 0.0;
         let mut transport: Option<Box<dyn LinkChannel>> = None;
         let mut cable: Option<Cable> = None;
         let mut cable_presents = 0u32;
@@ -612,6 +640,12 @@ impl Worker {
             let ceiling = match speed {
                 Speed::Paused => 0,
                 Speed::Normal if lock && !ticked => 0,
+                Speed::Normal if core.full_joypad() => {
+                    frame_credit += av.fps * PRESENT.as_secs_f64();
+                    let frames = frame_credit.floor() as u32;
+                    frame_credit -= frames as f64;
+                    frames
+                }
                 Speed::Normal => 1,
                 Speed::Fast => self.shared.fast_steps.load(Ordering::Relaxed),
             };
@@ -641,9 +675,13 @@ impl Worker {
                 loop {
                     ran += 1;
                     let last = ran >= ceiling || cost.last(began.elapsed(), budget);
-                    let input = match self.shared.turbo.load(Ordering::Relaxed) {
-                        true => input.turbo(turbo_frame),
-                        false => input.without_turbo(),
+                    let input = if core.full_joypad() {
+                        input
+                    } else {
+                        match self.shared.turbo.load(Ordering::Relaxed) {
+                            true => input.turbo(turbo_frame),
+                            false => input.without_turbo(),
+                        }
                     };
                     turbo_frame = turbo_frame.wrapping_add(1);
                     core.set_frame_skip(!last);
@@ -848,6 +886,23 @@ impl Worker {
         link: &Link,
     ) {
         match cmd {
+            Cmd::Disc(index) => {
+                let failed = match core.change_disc(index) {
+                    Ok(()) => false,
+                    Err(e) => {
+                        eprintln!("slot: disc: {e}");
+                        true
+                    }
+                };
+                let (index, count) = core.discs();
+                self.shared
+                    .disc_index
+                    .store(index as u32, Ordering::Release);
+                self.shared
+                    .disc_count
+                    .store(count as u32, Ordering::Release);
+                self.shared.disc_failed.store(failed, Ordering::Release);
+            }
             Cmd::Save(reply) => match core.serialize() {
                 Ok(state) => {
                     let _ = reply.send(self.for_card(state));
@@ -858,6 +913,13 @@ impl Worker {
                 if let Err(e) = core.unserialize(&self.for_core(state)) {
                     eprintln!("slot: {e}");
                 }
+                let (index, count) = core.discs();
+                self.shared
+                    .disc_index
+                    .store(index as u32, Ordering::Release);
+                self.shared
+                    .disc_count
+                    .store(count as u32, Ordering::Release);
             }
             Cmd::Sav(reply) => {
                 let _ = reply.send(core.save_ram());

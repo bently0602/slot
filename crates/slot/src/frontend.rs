@@ -55,6 +55,12 @@ pub struct Frontend {
     clocks: Clocks,
     about: AboutFace,
     quick_clock: QuickClock,
+    quick_controller: QuickClock,
+    controller_notice: Option<[(TexId, u32, u32); 2]>,
+    disc_faces_uploaded: bool,
+    state_faces_uploaded: bool,
+    disc_title_key: String,
+    disc_title_tex: Option<TexId>,
 }
 
 #[derive(Default)]
@@ -136,6 +142,12 @@ impl Frontend {
             clocks: Clocks::default(),
             about: AboutFace::default(),
             quick_clock: QuickClock::default(),
+            quick_controller: QuickClock::default(),
+            controller_notice: None,
+            disc_faces_uploaded: false,
+            state_faces_uploaded: false,
+            disc_title_key: String::new(),
+            disc_title_tex: None,
         }
     }
 
@@ -325,6 +337,18 @@ impl Frontend {
         compositor.end_frame(window);
     }
 
+    pub fn hdmi_scaling(&self) -> (slot_gfx::OutputScale, u8) {
+        let (scale, margin) = self.session.app().hdmi_scaling();
+        (
+            match scale {
+                slot_store::HdmiScale::Fit => slot_gfx::OutputScale::Fit,
+                slot_store::HdmiScale::Integer => slot_gfx::OutputScale::Integer,
+                slot_store::HdmiScale::Stretch => slot_gfx::OutputScale::Stretch,
+            },
+            margin,
+        )
+    }
+
     pub fn compose(&mut self, compositor: &mut Compositor) {
         compositor.set_blue_light(self.session.app().blue_light());
         compositor.set_picture(self.session.app().picture_rect());
@@ -349,9 +373,61 @@ impl Frontend {
             crate::latency::taken();
         }
         self.cart_faces.sync(self.session.app_mut(), compositor);
+        if self.session.app().state_menu_row().is_some() && !self.state_faces_uploaded {
+            let faces = ["Save State", "Load State", "Back"].map(|text| {
+                let face = menu_face(text);
+                (
+                    compositor.create_texture(face.w, face.h, &face.rgba),
+                    face.w,
+                    face.h,
+                )
+            });
+            self.session.app_mut().set_state_menu_faces(faces.to_vec());
+            self.state_faces_uploaded = true;
+        }
+        if self.session.app().disc_menu_row().is_some() {
+            if !self.disc_faces_uploaded {
+                let faces = ["Previous Disc", "Next Disc", "Back"].map(|text| {
+                    let face = menu_face(text);
+                    (
+                        compositor.create_texture(face.w, face.h, &face.rgba),
+                        face.w,
+                        face.h,
+                    )
+                });
+                self.session.app_mut().set_disc_menu_faces(faces.to_vec());
+                self.disc_faces_uploaded = true;
+            }
+            let (index, count, failed) = self.session.app().discs();
+            let title = if failed {
+                "Disc change failed".to_string()
+            } else if count == 0 {
+                "No disc loaded".to_string()
+            } else {
+                format!("Disc {} of {count}", index + 1)
+            };
+            if self.disc_title_key != title {
+                let face = menu_face(&title);
+                let tex = match self.disc_title_tex {
+                    Some(tex) => {
+                        compositor.update_texture(tex, face.w, face.h, &face.rgba);
+                        tex
+                    }
+                    None => compositor.create_texture(face.w, face.h, &face.rgba),
+                };
+                self.disc_title_tex = Some(tex);
+                self.disc_title_key = title;
+                self.session.app_mut().set_disc_title((tex, face.w, face.h));
+            }
+        }
         sync_clock(self.session.app_mut(), compositor, &mut self.clocks);
         sync_about(self.session.app_mut(), compositor, &mut self.about);
         sync_quick_clock(self.session.app_mut(), compositor, &mut self.quick_clock);
+        sync_quick_controller(
+            self.session.app_mut(),
+            compositor,
+            &mut self.quick_controller,
+        );
         sync_core_picker(
             self.session.app_mut(),
             compositor,
@@ -403,6 +479,42 @@ impl Frontend {
         );
         self.draws.clear();
         self.session.app().draw(&mut self.draws);
+        let app = self.session.app();
+        if self.session.controller_paused()
+            && matches!(app.phase(), Phase::Playing { .. })
+            && app.game_visible()
+            && !app.game_menu_open()
+            && app.power_menu().is_none()
+            && !app.shutting_down()
+        {
+            let faces = *self.controller_notice.get_or_insert_with(|| {
+                ["Controller unavailable", "Reconnect or press Start"].map(|text| {
+                    let face = word_face(text);
+                    (
+                        compositor.create_texture(face.w, face.h, &face.rgba),
+                        face.w,
+                        face.h,
+                    )
+                })
+            });
+            self.draws.push(Draw::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: OUT_W as f32,
+                h: OUT_H as f32,
+                colour: [0.0, 0.0, 0.0, 0.75],
+            });
+            for (i, (tex, w, h)) in faces.into_iter().enumerate() {
+                self.draws.push(Draw::Tex {
+                    x: (OUT_W as f32 - w as f32) / 2.0,
+                    y: OUT_H as f32 / 2.0 - 40.0 + i as f32 * 52.0,
+                    w: w as f32,
+                    h: h as f32,
+                    tex,
+                    alpha: 1.0,
+                });
+            }
+        }
         compositor.draw_list(&self.draws);
     }
 
@@ -490,10 +602,12 @@ impl Frontend {
 
     pub fn advance(&mut self, input: &mut dyn InputSource) {
         let now = self.now();
+        input.configure_controllers(self.session.app().controller_config());
         let events = input.poll(now);
         if self.rebuild.is_some() {
             return;
         }
+        self.session.update_controllers(input.controller_status());
         self.session.feed(events, now);
         let dt = self.last.elapsed().as_secs_f32();
         self.last = Instant::now();
@@ -509,7 +623,9 @@ impl Frontend {
     }
 
     pub fn advance_at(&mut self, input: &mut dyn InputSource, now: Millis, dt: f32) {
+        input.configure_controllers(self.session.app().controller_config());
         let events = input.poll(now);
+        self.session.update_controllers(input.controller_status());
         self.session.feed(events, now);
         self.session.update(dt);
     }
@@ -524,6 +640,14 @@ impl Frontend {
 
     pub fn restarting(&self) -> bool {
         self.session.app().ready_to_restart()
+    }
+
+    pub fn checkpoint_for_display(&mut self) -> std::io::Result<bool> {
+        self.session.checkpoint_for_display()
+    }
+
+    pub fn set_docked(&mut self, docked: bool) {
+        self.session.set_docked(docked);
     }
 
     pub fn restart(&mut self) {
@@ -599,11 +723,11 @@ impl UiFaces {
                 .collect(),
             quick_carets: [false, true].map(quick_caret_face),
             quick_legend: quick_legend_faces(),
-            sockets: slot_store::Core::ALL
+            sockets: slot_store::Core::GBA
                 .iter()
                 .map(|c| socket_face(*c))
                 .collect(),
-            chips: slot_store::Core::ALL
+            chips: slot_store::Core::GBA
                 .iter()
                 .map(|c| chip_face(Some(*c)))
                 .collect(),
@@ -740,6 +864,23 @@ fn sync_quick_clock(app: &mut App, compositor: &mut Compositor, state: &mut Quic
     let dim = upload(compositor, &mut state.dim, dim);
     let lit = upload(compositor, &mut state.lit, lit);
     app.set_quick_clock_faces((dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1));
+    state.shown = text;
+}
+
+fn sync_quick_controller(app: &mut App, compositor: &mut Compositor, state: &mut QuickClock) {
+    if app.quick_menu().is_none() {
+        return;
+    }
+    let text = app.controller_text();
+    if text == state.shown {
+        return;
+    }
+    let faces = [false, true].map(|lit| quick_value_face(&text, lit));
+    let [dim, lit] = faces;
+    let (dim_size, lit_size) = ((dim.w, dim.h), (lit.w, lit.h));
+    let dim = upload(compositor, &mut state.dim, dim);
+    let lit = upload(compositor, &mut state.lit, lit);
+    app.set_quick_controller_faces([(dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1)]);
     state.shown = text;
 }
 

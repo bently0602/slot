@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use slot_input::{Action, Gestures, Millis, RawEvent};
+use slot_input::{Action, Btn, ControllerStatus, Gestures, Millis, RawEvent};
 use slot_retro::Rumble;
 use slot_store::Platform;
 use slot_ui::FfState;
@@ -29,6 +29,9 @@ pub struct Session {
     pulse: Option<(Millis, u16)>,
     reloading: bool,
     driven: bool,
+    docked: bool,
+    controller_paused: bool,
+    handheld_override: bool,
 }
 
 impl Session {
@@ -50,6 +53,9 @@ impl Session {
             pulse: None,
             reloading: false,
             driven: false,
+            docked: false,
+            controller_paused: false,
+            handheld_override: false,
         }
     }
 
@@ -92,6 +98,58 @@ impl Session {
         &mut self.app
     }
 
+    pub fn set_docked(&mut self, docked: bool) {
+        self.docked = docked;
+        self.bridge_link(|app| app.set_docked(docked));
+        self.sync_audio_route();
+        if self.dozing() {
+            self.pad.clear();
+            self.fast = false;
+            self.rewinding = false;
+            self.sync_pad();
+            self.rumble(0);
+        }
+        if !docked {
+            self.controller_paused = false;
+            self.handheld_override = false;
+        }
+        self.sync_speed();
+    }
+
+    pub fn controller_paused(&self) -> bool {
+        self.controller_paused
+    }
+
+    pub fn update_controllers(&mut self, status: ControllerStatus) {
+        let connected = status.active.is_some();
+        self.app.set_controller_status(status);
+        if connected {
+            self.handheld_override = false;
+        }
+        let paused = self.docked
+            && self.app.controller_config().pause_disconnect
+            && !self.app.link_active()
+            && !self.handheld_override
+            && !connected
+            && matches!(
+                self.app.phase(),
+                Phase::Playing { .. }
+                    | Phase::Inserting { .. }
+                    | Phase::Polaroids { .. }
+                    | Phase::Doze { .. }
+            );
+        if paused != self.controller_paused {
+            self.controller_paused = paused;
+            self.gestures = Gestures::new();
+            self.pad.clear();
+            self.rewinding = false;
+            self.fast = false;
+            self.rumble(0);
+            self.sync_pad();
+            self.sync_speed();
+        }
+    }
+
     pub fn emu(&self) -> Option<&EmuHandle> {
         self.emu.as_ref()
     }
@@ -101,6 +159,27 @@ impl Session {
         if let Some(emu) = &self.emu {
             emu.set_driven(driven);
         }
+    }
+
+    pub fn checkpoint_for_display(&mut self) -> std::io::Result<bool> {
+        if self
+            .emu
+            .as_ref()
+            .is_some_and(|emu| emu.state() == CoreState::Loading)
+        {
+            return Ok(false);
+        }
+        if let Some(emu) = &self.emu {
+            emu.set_speed(Speed::Paused);
+        }
+        let saved = self.app.checkpoint_for_display();
+        if matches!(saved, Ok(true)) {
+            self.emu = None;
+            self.rumble(0);
+        } else {
+            self.sync_speed();
+        }
+        saved
     }
 
     pub fn step_emulator(&self, present: Duration, timeout: Duration) -> bool {
@@ -147,6 +226,35 @@ impl Session {
     pub fn feed(&mut self, events: impl IntoIterator<Item = RawEvent>, now: Millis) {
         let mut actions = Vec::new();
         for ev in events {
+            if self.controller_paused
+                && ev == RawEvent::Down(Btn::Start)
+                && matches!(self.app.phase(), Phase::Playing { .. })
+                && !self.held()
+            {
+                self.controller_paused = false;
+                self.handheld_override = true;
+                self.gestures = Gestures::new();
+                self.pad.clear();
+                self.sync_speed();
+                continue;
+            }
+            if self
+                .app
+                .seated_cart()
+                .is_some_and(|c| c.platform == Platform::Psx)
+            {
+                match ev {
+                    RawEvent::Down(b @ (Btn::L2 | Btn::R2)) => {
+                        actions.push(Action::GbaDown(b));
+                        continue;
+                    }
+                    RawEvent::Up(b @ (Btn::L2 | Btn::R2)) => {
+                        actions.push(Action::GbaUp(b));
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             actions.extend(self.gestures.feed(ev, now));
         }
         actions.extend(self.gestures.tick(now));
@@ -196,7 +304,7 @@ impl Session {
                 emu.set_volume(self.app.output_volume());
             }
         }
-        if menu || self.overlaid() {
+        if menu || self.overlaid() || self.dozing() {
             self.pad.clear();
         } else if self.app.takes_from_the_game(action) {
             if let Action::GbaDown(btn) | Action::GbaUp(btn) = action {
@@ -206,10 +314,12 @@ impl Session {
             self.pad.apply(action);
         }
         self.sync_rumble();
+        self.sync_speed();
     }
 
     pub fn update(&mut self, dt: f32) {
         self.bridge_link(|app| app.update(dt));
+        self.sync_audio_route();
         if let Some(emu) = &self.emu {
             emu.set_volume(self.app.output_volume());
         }
@@ -251,6 +361,14 @@ impl Session {
         }
         self.sync_core();
         self.sync_reload();
+        if let Some(emu) = &self.emu {
+            if let Some(index) = self.app.take_disc_change() {
+                emu.change_disc(index);
+            }
+            self.app.set_discs(emu.discs());
+        } else {
+            self.app.set_discs((0, 0, false));
+        }
         if !self.has_core() {
             for action in self.gestures.drop_ff_latch() {
                 self.act(action);
@@ -329,11 +447,11 @@ impl Session {
     }
 
     fn overlaid(&self) -> bool {
-        self.showing_polaroids() || self.held()
+        self.showing_polaroids() || self.held() || self.controller_paused
     }
 
     fn playing(&self) -> bool {
-        matches!(self.app.phase(), Phase::Playing { .. }) && !self.held()
+        matches!(self.app.phase(), Phase::Playing { .. }) && !self.held() && !self.controller_paused
     }
 
     fn held(&self) -> bool {
@@ -354,6 +472,7 @@ impl Session {
             emu.set_ff_sound(self.app.ff_sound());
             emu.set_speed(
                 if self.inserting()
+                    || self.controller_paused
                     || self.ejecting()
                     || self.showing_polaroids()
                     || self.dozing()
@@ -370,6 +489,15 @@ impl Session {
             emu.set_turbo(self.app.turbo());
             emu.set_rewind_recording(self.app.records_rewind());
         }
+    }
+
+    fn sync_audio_route(&mut self) {
+        self.sink.configure_route(crate::audio::AudioRoute {
+            output: self.app.audio_output(),
+            docked: self.docked,
+        });
+        self.app
+            .set_hdmi_audio(self.docked && self.sink.hdmi_active());
     }
 
     fn no_core() -> bool {

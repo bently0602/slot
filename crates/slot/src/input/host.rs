@@ -1,9 +1,14 @@
-use gilrs::{EventType, Gilrs};
-use slot_input::{Btn, InputSource, Millis, RawEvent};
+use gilrs::{Axis, EventType, Gilrs};
+use slot_input::{
+    Btn, ControllerConfig, ControllerInfo, ControllerStatus, InputSource, Millis, RawEvent,
+};
+use std::collections::BTreeMap;
 use winit::event::WindowEvent;
 use winit::keyboard::{KeyCode, PhysicalKey};
 
+use super::controller_hub::ControllerHub;
 use super::keys::key_to_btn;
+use super::mux::InputMux;
 use super::pad::pad_to_btn;
 
 pub struct HostInput {
@@ -11,15 +16,34 @@ pub struct HostInput {
     pad: Option<Gilrs>,
     lid_closed: bool,
     held_keys: Vec<Btn>,
+    mux: InputMux,
+    pads: BTreeMap<usize, InputMux>,
+    hub: ControllerHub,
 }
 
 impl HostInput {
     pub fn new() -> Self {
+        let pad = Gilrs::new().ok();
+        let mut hub = ControllerHub::default();
+        if let Some(pads) = &pad {
+            for (id, gamepad) in pads.gamepads() {
+                hub.connect(
+                    usize::from(id) as u64 + 1,
+                    ControllerInfo {
+                        id: format!("{:02x?}|{}", gamepad.uuid(), gamepad.name()),
+                        name: gamepad.name().into(),
+                    },
+                );
+            }
+        }
         HostInput {
             pending: Vec::new(),
-            pad: Gilrs::new().ok(),
+            pad,
             lid_closed: false,
             held_keys: Vec::new(),
+            mux: InputMux::default(),
+            pads: BTreeMap::new(),
+            hub,
         }
     }
 
@@ -38,7 +62,7 @@ impl HostInput {
 
     fn release_keys(&mut self) {
         for btn in std::mem::take(&mut self.held_keys) {
-            self.pending.push(RawEvent::Up(btn));
+            self.pending.extend(self.mux.feed(0, RawEvent::Up(btn)));
         }
     }
 
@@ -72,28 +96,79 @@ impl HostInput {
         if pressed {
             crate::latency::read();
         }
-        self.pending.push(if pressed {
-            RawEvent::Down(btn)
-        } else {
-            RawEvent::Up(btn)
-        });
+        self.pending.extend(self.mux.feed(
+            0,
+            if pressed {
+                RawEvent::Down(btn)
+            } else {
+                RawEvent::Up(btn)
+            },
+        ));
     }
 
     fn drain_pad(&mut self) {
         let Some(pad) = self.pad.as_mut() else {
             return;
         };
-        let mut edges = Vec::new();
         while let Some(ev) = pad.next_event() {
+            let id = usize::from(ev.id);
+            let source = id as u64 + 1;
+            let held = self.pads.entry(id).or_default();
             match ev.event {
-                EventType::ButtonPressed(b, _) => edges.push((b, true)),
-                EventType::ButtonReleased(b, _) => edges.push((b, false)),
+                EventType::Connected => {
+                    let gamepad = pad.gamepad(ev.id);
+                    let changes = self.hub.connect(
+                        source,
+                        ControllerInfo {
+                            id: format!("{:02x?}|{}", gamepad.uuid(), gamepad.name()),
+                            name: gamepad.name().into(),
+                        },
+                    );
+                    for event in changes {
+                        self.pending.extend(self.mux.feed(u64::MAX, event));
+                    }
+                }
+                EventType::ButtonPressed(b, _) | EventType::ButtonReleased(b, _) => {
+                    if let Some(btn) = pad_to_btn(b) {
+                        let down = matches!(ev.event, EventType::ButtonPressed(..));
+                        let event = if down {
+                            crate::latency::read();
+                            RawEvent::Down(btn)
+                        } else {
+                            RawEvent::Up(btn)
+                        };
+                        held.feed(b as u64, event);
+                        for event in self.hub.set(source, held.buttons()) {
+                            self.pending.extend(self.mux.feed(u64::MAX, event));
+                        }
+                    }
+                }
+                EventType::AxisChanged(axis @ (Axis::LeftStickX | Axis::LeftStickY), value, _) => {
+                    let (negative, positive) = if axis == Axis::LeftStickX {
+                        (Btn::Left, Btn::Right)
+                    } else {
+                        (Btn::Down, Btn::Up)
+                    };
+                    let deadzone = f32::from(self.hub.deadzone(source)) / 100.0;
+                    let buttons = if value < -deadzone {
+                        vec![negative]
+                    } else if value > deadzone {
+                        vec![positive]
+                    } else {
+                        Vec::new()
+                    };
+                    held.set(0x10000 + axis as u64, buttons);
+                    for event in self.hub.set(source, held.buttons()) {
+                        self.pending.extend(self.mux.feed(u64::MAX, event));
+                    }
+                }
+                EventType::Disconnected => {
+                    self.pads.remove(&id);
+                    for event in self.hub.disconnect(source) {
+                        self.pending.extend(self.mux.feed(u64::MAX, event));
+                    }
+                }
                 _ => {}
-            }
-        }
-        for (b, pressed) in edges {
-            if let Some(btn) = pad_to_btn(b) {
-                self.push(btn, pressed);
             }
         }
     }
@@ -106,6 +181,14 @@ impl Default for HostInput {
 }
 
 impl InputSource for HostInput {
+    fn configure_controllers(&mut self, config: &ControllerConfig) {
+        for event in self.hub.configure(config) {
+            self.pending.extend(self.mux.feed(u64::MAX, event));
+        }
+    }
+    fn controller_status(&self) -> ControllerStatus {
+        self.hub.status()
+    }
     fn poll(&mut self, _now: Millis) -> Vec<RawEvent> {
         self.drain_pad();
         std::mem::take(&mut self.pending)

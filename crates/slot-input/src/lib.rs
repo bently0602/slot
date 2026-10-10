@@ -1,5 +1,10 @@
+mod controllers;
 mod gesture;
 mod raw;
+
+pub use controllers::{
+    ControllerConfig, ControllerInfo, ControllerProfile, ControllerStatus, STICK_DEADZONES,
+};
 
 pub use gesture::{
     Action, Gestures, FF_DOUBLE_TAP_MS, MENU_DOUBLE_TAP_MS, MENU_HOLD_MS, MENU_TAP_MS,

@@ -17,7 +17,7 @@ pub fn pad_to_btn(button: Button) -> Option<Btn> {
         Button::RightTrigger2 => Btn::R2,
         Button::Start => Btn::Start,
         Button::Select => Btn::Select,
-        Button::Mode => Btn::Menu,
+        Button::Mode | Button::LeftThumb => Btn::Menu,
         _ => return None,
     })
 }

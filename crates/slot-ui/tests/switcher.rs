@@ -40,7 +40,10 @@ struct Quad {
 fn quads(out: &[Draw]) -> Vec<Quad> {
     out.iter()
         .map(|d| match *d {
-            Draw::Rect { x, y, w, h, colour } => Quad {
+            Draw::Rect { x, y, w, h, colour }
+            | Draw::Yawed {
+                x, y, w, h, colour, ..
+            } => Quad {
                 x,
                 y,
                 w,

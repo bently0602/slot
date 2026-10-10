@@ -9,6 +9,7 @@ use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
 const SIDE_SCALE: f32 = 0.78;
 const SIDE_ALPHA: f32 = 0.55;
+const COVER_YAW: f32 = 0.96;
 
 static SLACK: AtomicU32 = AtomicU32::new(0);
 
@@ -48,6 +49,7 @@ pub struct Shelf {
     pub carts: Vec<Cart>,
     pub index: usize,
     pub scroll: f32,
+    coverflow: bool,
     faces: Vec<Option<TexId>>,
     shadow: Option<TexId>,
     gb_shadow: Option<TexId>,
@@ -66,6 +68,7 @@ impl Shelf {
             carts,
             index: 0,
             scroll: 0.0,
+            coverflow: false,
             shadow: None,
             gb_shadow: None,
             gbc_shadow: None,
@@ -80,6 +83,10 @@ impl Shelf {
         self.scroll = i as f32;
         self.ride = i as f32;
         self.vel = 0.0;
+    }
+
+    pub fn set_coverflow(&mut self, enabled: bool) {
+        self.coverflow = enabled;
     }
 
     pub fn set_shadow(&mut self, face: TexId) {
@@ -113,7 +120,33 @@ impl Shelf {
     }
 
     pub fn on_screen(&self) -> Vec<usize> {
-        self.around(SLOTS)
+        if !self.coverflow {
+            return self.around(SLOTS);
+        }
+        let target = self.scroll_target();
+        let mut slots = self.row_slots();
+        slots.sort_by(|a, b| {
+            let distance = |slot: i32| (target + slot as f32 - self.scroll).abs();
+            distance(*a).total_cmp(&distance(*b))
+        });
+        let mut out = Vec::new();
+        for slot in slots {
+            if let Some(i) = self.cart_at_offset(slot) {
+                if !out.contains(&i) {
+                    out.push(i);
+                }
+            }
+        }
+        out
+    }
+
+    fn row_slots(&self) -> Vec<i32> {
+        if self.coverflow && self.carts.len() > 1 {
+            let centre = (self.scroll - self.scroll_target()).floor() as i32;
+            (centre - SLOTS..=centre + SLOTS + 1).collect()
+        } else {
+            (-SLOTS..=SLOTS).collect()
+        }
     }
 
     pub fn around(&self, radius: i32) -> Vec<usize> {
@@ -287,7 +320,31 @@ impl Shelf {
             .map_or(CART_W, |c| cart_box(c.platform).0) as f32;
         let offset = self.scroll_target() - self.scroll;
         let scale = shrink(offset);
-        (OUT_W as f32 / 2.0 + offset * w - w * scale / 2.0, scale)
+        (
+            OUT_W as f32 / 2.0 + self.spacing(offset, w) - w * scale / 2.0,
+            scale,
+        )
+    }
+
+    pub fn selected_yaw(&self) -> f32 {
+        self.yaw(self.scroll_target() - self.scroll)
+    }
+
+    fn yaw(&self, offset: f32) -> f32 {
+        if self.coverflow {
+            -offset.clamp(-1.0, 1.0) * COVER_YAW
+        } else {
+            0.0
+        }
+    }
+
+    fn spacing(&self, offset: f32, w: f32) -> f32 {
+        if self.coverflow {
+            let d = offset.abs();
+            offset.signum() * w * (0.64 * d.min(1.0) + 0.20 * (d - 1.0).max(0.0))
+        } else {
+            offset * w
+        }
     }
 
     pub fn update(&mut self, dt: f32) {
@@ -312,7 +369,16 @@ impl Shelf {
         let recede = recede.clamp(0.0, 1.0);
         let dim = dim.clamp(0.0, 1.0);
         let target = self.scroll_target();
-        for slot in -SLOTS..=SLOTS {
+        // Anchor the visible range to the animated position, so a key press does not
+        // replace carts before they have moved. Paint distant faces before near ones.
+        let mut slots = self.row_slots();
+        if self.coverflow {
+            slots.sort_by(|a, b| {
+                let distance = |slot: i32| (target + slot as f32 - self.scroll).abs();
+                distance(*b).total_cmp(&distance(*a))
+            });
+        }
+        for slot in slots {
             let Some(i) = self.cart_at_offset(slot) else {
                 continue;
             };
@@ -323,34 +389,55 @@ impl Shelf {
             let offset = target + slot as f32 - self.scroll;
             let t = offset.abs().min(1.0);
             let scale = shrink(offset);
-            let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede);
+            let fade = if self.coverflow {
+                (1.0 - (offset.abs() - 2.0).max(0.0) / 2.0).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede) * fade;
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
-            let x = OUT_W as f32 / 2.0 + offset * cw as f32 - w / 2.0 + away * PART * recede;
+            let x = OUT_W as f32 / 2.0 + self.spacing(offset, cw as f32) - w / 2.0
+                + away * PART * recede;
             if x + w <= 0.0 || x >= OUT_W as f32 || alpha <= 0.0 {
                 continue;
             }
             let x = x + shake;
             let y = foot_y(ch as f32) - h;
             if alpha < 1.0 {
+                if cart.platform == slot_store::Platform::Psx {
+                    out.push(
+                        Draw::Rect {
+                            x,
+                            y,
+                            w,
+                            h,
+                            colour: [0.0, 0.0, 0.0, recede_alpha(alpha)],
+                        }
+                        .yawed(self.yaw(offset)),
+                    );
+                }
                 let backing = match self.shells.get(i).copied().flatten() {
                     None => self.shadow,
                     Some(GbShell::Notched) => self.gb_shadow,
                     Some(GbShell::Rounded) => self.gbc_shadow,
                 };
-                if let Some(tex) = backing {
-                    out.push(Draw::Tex {
-                        x,
-                        y,
-                        w,
-                        h,
-                        tex,
-                        alpha: recede_alpha(alpha),
-                    });
+                if let Some(tex) = backing.filter(|_| cart.platform != slot_store::Platform::Psx) {
+                    out.push(
+                        Draw::Tex {
+                            x,
+                            y,
+                            w,
+                            h,
+                            tex,
+                            alpha: recede_alpha(alpha),
+                        }
+                        .yawed(self.yaw(offset)),
+                    );
                 }
             }
-            out.push(match self.face(i) {
+            let face = match self.face(i) {
                 Some(tex) => Draw::Tex {
                     x,
                     y,
@@ -374,7 +461,8 @@ impl Shelf {
                         ],
                     }
                 }
-            });
+            };
+            out.push(face.yawed(self.yaw(offset)));
         }
     }
 }

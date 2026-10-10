@@ -99,6 +99,9 @@ fn open_named(
         }
         match LibretroCore::open_with(path, &bios, &saves) {
             Ok(mut opened) => {
+                if core == Core::PcsxRearmed {
+                    opened.set_video_canvas(640, 480);
+                }
                 apply_core_options(
                     &mut opened,
                     core,
@@ -125,7 +128,9 @@ pub fn palette_for(
     rom: &Path,
     link: Option<u8>,
 ) -> Option<GbPalette> {
-    chosen.filter(|_| link.is_none() && platform != Platform::Gba && dmg_only(rom))
+    chosen.filter(|_| {
+        link.is_none() && matches!(platform, Platform::Gb | Platform::Gbc) && dmg_only(rom)
+    })
 }
 
 pub fn dmg_only(rom: &Path) -> bool {
@@ -155,6 +160,7 @@ pub fn colour_option(which: Core, on: bool) -> Option<(&'static str, &'static st
             "gpsp_color_correction",
             if on { "enabled" } else { "disabled" },
         )),
+        Core::PcsxRearmed => None,
     }
 }
 
@@ -175,6 +181,13 @@ pub fn apply_core_options(
     colour: bool,
     palette: Option<GbPalette>,
 ) {
+    if which == Core::PcsxRearmed {
+        core.set_option("pcsx_rearmed_bios", "auto");
+        core.set_option("pcsx_rearmed_memcard1", "libretro");
+        core.set_option("pcsx_rearmed_memcard2", "none");
+        core.set_option("pcsx_rearmed_frameskip_type", "disabled");
+        return;
+    }
     core.set_option(&format!("{}_frameskip", which.as_str()), "auto");
     if which == Core::Mgba {
         core.set_option("mgba_sgb_borders", "OFF");

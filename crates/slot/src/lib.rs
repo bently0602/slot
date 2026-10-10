@@ -13,6 +13,8 @@ pub mod emu;
 pub mod face_builder;
 pub mod frames;
 pub mod frontend;
+#[cfg(target_os = "linux")]
+pub mod hdmi;
 pub mod input;
 pub mod label_cache;
 pub mod latency;

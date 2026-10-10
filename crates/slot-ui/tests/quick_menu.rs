@@ -79,7 +79,14 @@ fn the_fast_forward_row_offers_the_four_ceilings_the_card_can_hold() {
 fn the_rows_run_in_the_order_the_user_chose() {
     assert_eq!(
         QuickRow::MAIN.map(QuickRow::label),
-        ["Screen", "Gameplay", "Date & Time", "About"]
+        [
+            "Screen",
+            "Video Out",
+            "Controllers",
+            "Gameplay",
+            "Date & Time",
+            "About"
+        ]
     );
     assert_eq!(
         QuickRow::SCREEN.map(QuickRow::label),
@@ -87,7 +94,8 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "GBA Shader",
             "GB / GBC Shader",
             "Color Correction",
-            "GB Palettes"
+            "GB Palettes",
+            "Cover Flow"
         ]
     );
     assert_eq!(
@@ -108,13 +116,18 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::Screen,
             QuickRow::DateTime,
             QuickRow::About,
-            QuickRow::Game
+            QuickRow::Game,
+            QuickRow::VideoOut,
+            QuickRow::Controllers,
+            QuickRow::ControllerReset
         ]
     );
     for page in [
         &QuickRow::MAIN[..],
         &QuickRow::SCREEN[..],
         &QuickRow::GAME[..],
+        &QuickRow::VIDEO[..],
+        &QuickRow::CONTROLLERS[..],
     ] {
         for &row in page {
             assert_eq!(row.page(), page, "{row:?}");
@@ -136,7 +149,23 @@ fn the_values_read_as_the_menu_prints_them() {
             "LCD3x",
             "Grid",
             "Dot",
-            "Simpletex"
+            "Simpletex",
+            "Auto",
+            "Internal",
+            "720p / 60",
+            "1080p / 60",
+            "Fit",
+            "Integer",
+            "Stretch",
+            "5%",
+            "10%",
+            "15%",
+            "20%",
+            "25%",
+            "30%",
+            "40%",
+            "Device",
+            "HDMI"
         ]
     );
     assert_eq!(QuickValue::flag(true), QuickValue::On);

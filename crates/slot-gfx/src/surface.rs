@@ -66,3 +66,38 @@ pub fn blit_rect(window: (u32, u32), shake: f32) -> (i32, i32, i32, i32) {
     let dx = shake * fit_scale(window.0, window.1) as f32;
     (x + dx.round() as i32, y, w, h)
 }
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum OutputScale {
+    Fit,
+    Integer,
+    Stretch,
+}
+
+/// Scale the complete 720x480 canvas inside a TV-safe area. The emulator's
+/// own aspect ratio remains inside that canvas unless Stretch is requested.
+pub fn hdmi_rect(
+    window: (u32, u32),
+    scale: OutputScale,
+    margin: u8,
+    shake: f32,
+) -> (i32, i32, i32, i32) {
+    let percent = u32::from(margin.min(10));
+    let inset_x = window.0 * percent / 100;
+    let inset_y = window.1 * percent / 100;
+    let area = (
+        (window.0 - inset_x * 2).max(1),
+        (window.1 - inset_y * 2).max(1),
+    );
+    let (x, y, w, h) = match scale {
+        OutputScale::Stretch => (0, 0, area.0 as i32, area.1 as i32),
+        OutputScale::Integer if area.0 >= OUT_W && area.1 >= OUT_H => fit_rect(area.0, area.1),
+        _ => blit_rect_fit(area, 0.0),
+    };
+    (
+        x + inset_x as i32 + (shake * w as f32 / OUT_W as f32).round() as i32,
+        y + inset_y as i32,
+        w,
+        h,
+    )
+}

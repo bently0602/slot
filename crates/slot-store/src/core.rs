@@ -10,15 +10,18 @@ pub enum Core {
     #[default]
     Mgba,
     Gpsp,
+    PcsxRearmed,
 }
 
 impl Core {
-    pub const ALL: [Core; 2] = [Core::Mgba, Core::Gpsp];
+    pub const ALL: [Core; 3] = [Core::Mgba, Core::Gpsp, Core::PcsxRearmed];
+    pub const GBA: [Core; 2] = [Core::Mgba, Core::Gpsp];
 
     pub fn as_str(&self) -> &'static str {
         match self {
             Core::Mgba => "mgba",
             Core::Gpsp => "gpsp",
+            Core::PcsxRearmed => "pcsx_rearmed",
         }
     }
 
@@ -30,6 +33,7 @@ impl Core {
         match self {
             Core::Mgba => "mGBA",
             Core::Gpsp => "gpSP",
+            Core::PcsxRearmed => "PCSX ReARMed",
         }
     }
 
@@ -37,20 +41,23 @@ impl Core {
         match s.trim().to_ascii_lowercase().as_str() {
             "mgba" => Some(Core::Mgba),
             "gpsp" => Some(Core::Gpsp),
+            "pcsx_rearmed" => Some(Core::PcsxRearmed),
             _ => None,
         }
     }
 
     pub fn runs(self, platform: Platform) -> bool {
         match self {
-            Core::Mgba => true,
+            Core::Mgba => platform != Platform::Psx,
             Core::Gpsp => platform == Platform::Gba,
+            Core::PcsxRearmed => platform == Platform::Psx,
         }
     }
 
     pub fn default_for(platform: Platform) -> Core {
         match platform {
             Platform::Gba | Platform::Gb | Platform::Gbc => Core::Mgba,
+            Platform::Psx => Core::PcsxRearmed,
         }
     }
 }

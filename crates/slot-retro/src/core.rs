@@ -23,6 +23,8 @@ impl ButtonMask {
     pub const X: u16 = 1 << 9;
     pub const L: u16 = 1 << 10;
     pub const R: u16 = 1 << 11;
+    pub const L2: u16 = 1 << 12;
+    pub const R2: u16 = 1 << 13;
 
     pub fn without_turbo(self) -> ButtonMask {
         ButtonMask(self.0 & !(Self::X | Self::Y))
@@ -76,6 +78,15 @@ impl From<std::io::Error> for CoreError {
 }
 
 pub trait RetroCore: Send {
+    fn discs(&self) -> (usize, usize) {
+        (0, 0)
+    }
+    fn change_disc(&mut self, _index: usize) -> Result<(), CoreError> {
+        Err(CoreError::Unsupported("disc swapping".into()))
+    }
+    fn full_joypad(&self) -> bool {
+        false
+    }
     fn load(&mut self, rom: &Path) -> Result<(), CoreError>;
     fn run_frame(&mut self, input: ButtonMask);
     fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {

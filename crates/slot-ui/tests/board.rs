@@ -218,7 +218,7 @@ fn board_units_land_on_the_panel_at_one_and_a_half_times() {
 
 #[test]
 fn a_socket_names_its_core_at_half_strength() {
-    for core in Core::ALL {
+    for core in Core::GBA {
         let face = socket_face(core);
         assert_eq!((face.w, face.h), (SOCKET_W, SOCKET_H));
         let strongest = (12..34)

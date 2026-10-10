@@ -42,6 +42,13 @@ build() {
 
 	mkdir -p "$src"
 	[ -d "$src/.git" ] || git init -q "$src"
+	# Bind-mounted files can belong to the host user rather than the container's
+	# root user. Older Git requires safe.directory in global configuration.
+	# Only add this generated checkout when Git cannot already access it.
+	src_abs="$(cd "$src" && pwd -P)"
+	if ! git -C "$src" rev-parse --git-dir >/dev/null 2>&1; then
+		git config --global --add safe.directory "$src_abs"
+	fi
 	git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null ||
 		git -C "$src" fetch -q --depth 1 https://github.com/libretro/mgba "$commit"
 	git -C "$src" checkout -q --force --detach "$commit"

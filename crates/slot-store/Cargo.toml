@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+slot-input = { path = "../slot-input" }
 unicode-normalization.workspace = true
 
 [dev-dependencies]

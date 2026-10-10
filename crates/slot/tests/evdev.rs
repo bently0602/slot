@@ -122,6 +122,27 @@ fn an_input_node_with_no_sysfs_entry_is_skipped_rather_than_opened() {
 }
 
 #[test]
+fn usb_gamepads_are_selected_while_usb_keyboards_with_power_keys_are_skipped() {
+    let d = input_tree();
+    let dev = d.path().join("dev/input");
+    let sys = d.path().join("sys/class/input");
+    write(&sys.join("event0/device/id/bustype"), "0003\n");
+    write(
+        &sys.join("event0/device/capabilities/key"),
+        "10000000000000 0\n",
+    );
+    write(&sys.join("event1/device/id/bustype"), "0003\n");
+    let selected = pick_devices(&dev, &sys);
+    assert!(selected.contains(&dev.join("event1")));
+    assert!(!selected.contains(&dev.join("event0")));
+    assert!(slot::input::evdev::is_controller(&sys, &dev.join("event1")));
+    assert!(!slot::input::evdev::is_controller(
+        &sys,
+        &dev.join("event2")
+    ));
+}
+
+#[test]
 fn the_survey_reports_the_nodes_that_were_not_opened_too() {
     let d = input_tree();
     let lines = slot::input::trace::survey(
