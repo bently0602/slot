@@ -57,6 +57,35 @@ please [open an issue on GitHub](https://github.com/BrandonKowalski/slot/issues)
 
 ---
 
+# Desktop testing (Ubuntu / WSL)
+
+Run from an Ubuntu or Debian terminal, including Ubuntu in WSL on Windows:
+
+```bash
+bash setup-desktop.sh --run
+```
+
+The script installs missing system prerequisites (using sudo when needed), installs
+the pinned Rust toolchain, builds the desktop app and patched mGBA core, and prepares
+`sdcard/`. Omit `--run` to set up without launching. It is safe to rerun: Cargo reuses
+its build cache, an up-to-date mGBA core is reused, and existing ROMs, saves, BIOS files
+and settings are preserved. Desktop build files are kept separate from device builds.
+
+Put unzipped ROMs in `sdcard/Games/GBA`, `sdcard/Games/GB` or `sdcard/Games/GBC`, and
+select mGBA for desktop gameplay. WSL launches need WSLg; the script configures WSL
+audio locally without changing your personal ALSA settings.
+
+WSL launches default to X11 with software rendering to avoid Wayland and GPU
+driver failures. This uses more CPU than hardware rendering. If your WSL graphics
+drivers work, use `bash setup-desktop.sh --run --native-graphics` to keep the normal
+display and graphics configuration. Native Linux launches keep their normal graphics.
+
+If a graphics failure left WSLg unresponsive, save your work in WSL, run
+`wsl --shutdown` in Windows PowerShell, reopen Ubuntu, and retry the script. Shutdown
+stops all running WSL distributions, including WSL sessions used by Docker.
+
+---
+
 # AI Disclosure
 
 The Rust frontend was put together by Claude Opus. I reviewed everything that was
