@@ -24,6 +24,8 @@ enum PixelFormat {
 
 struct Host {
     video: Vec<u8>,
+    canvas: (u32, u32),
+    disk: Option<DiskControl>,
     format: PixelFormat,
     audio: Vec<i16>,
     inputs: [u16; 2],
@@ -75,6 +77,12 @@ unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u1
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
     match cmd {
+        SET_DISK_CONTROL_INTERFACE => {
+            if data.is_null() {
+                return false;
+            }
+            with_host(|h| h.disk = Some(*(data as *const DiskControl))).is_some()
+        }
         GET_CAN_DUPE => {
             if data.is_null() {
                 return false;
@@ -318,6 +326,47 @@ unsafe extern "C" fn video_refresh(
         return;
     }
     with_host(|h| {
+        if h.canvas != (GBA_W, GBA_H) {
+            let (cw, ch) = h.canvas;
+            if width == 0 || height == 0 || width > 4096 || height > 4096 {
+                return;
+            }
+            let bytes = match h.format {
+                PixelFormat::Xrgb8888 => 4,
+                PixelFormat::Rgb565 => 2,
+            };
+            if pitch < width as usize * bytes {
+                return;
+            }
+            for y in 0..ch as usize {
+                let sy = y * height as usize / ch as usize;
+                let src = (data as *const u8).add(sy * pitch);
+                for x in 0..cw as usize {
+                    let sx = x * width as usize / cw as usize;
+                    let dst = (y * cw as usize + x) * 4;
+                    match h.format {
+                        PixelFormat::Xrgb8888 => ptr::copy_nonoverlapping(
+                            src.add(sx * 4),
+                            h.video.as_mut_ptr().add(dst),
+                            4,
+                        ),
+                        PixelFormat::Rgb565 => {
+                            let p = ptr::read_unaligned((src as *const u16).add(sx));
+                            let r = ((p >> 11) & 31) as u8;
+                            let g = ((p >> 5) & 63) as u8;
+                            let b = (p & 31) as u8;
+                            h.video[dst..dst + 4].copy_from_slice(&[
+                                (b << 3) | (b >> 2),
+                                (g << 2) | (g >> 4),
+                                (r << 3) | (r >> 2),
+                                0,
+                            ]);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         let cols = width.min(GBA_W) as usize;
         let rows = height.min(GBA_H) as usize;
         let ox = (GBA_W as usize - cols) / 2;
@@ -470,6 +519,8 @@ impl LibretroCore {
         }
         let mut host = Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            canvas: (GBA_W, GBA_H),
+            disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],
@@ -507,6 +558,12 @@ impl LibretroCore {
             loaded: false,
             _lib: lib,
         })
+    }
+
+    pub fn set_video_canvas(&mut self, width: u32, height: u32) {
+        assert!(width > 0 && height > 0 && width <= 4096 && height <= 4096);
+        self.host.canvas = (width, height);
+        self.host.video.resize((width * height * 4) as usize, 0);
     }
 
     fn unload(&mut self) {
@@ -549,20 +606,96 @@ impl Drop for LibretroCore {
 }
 
 impl RetroCore for LibretroCore {
+    fn discs(&self) -> (usize, usize) {
+        let Some(disk) = self.host.disk else {
+            return (0, 0);
+        };
+        unsafe {
+            let index = disk.get_image_index.map_or(0, |f| f()) as usize;
+            let count = disk.get_num_images.map_or(0, |f| f()) as usize;
+            (index, count)
+        }
+    }
+    fn change_disc(&mut self, index: usize) -> Result<(), CoreError> {
+        let (old, count) = self.discs();
+        let Some(disk) = self.host.disk else {
+            return Err(CoreError::Unsupported("disc controls unavailable".into()));
+        };
+        let (Some(eject), Some(change)) = (disk.set_eject_state, disk.set_image_index) else {
+            return Err(CoreError::Unsupported("disc controls incomplete".into()));
+        };
+        if index >= count {
+            return Err(CoreError::Load("disc index out of range".into()));
+        }
+        let _active = Active::bind(&mut self.host);
+        unsafe {
+            if !eject(true) {
+                return Err(CoreError::Load("could not open disc tray".into()));
+            }
+            if change(index as u32) && eject(false) {
+                return Ok(());
+            }
+            let _ = change(old as u32);
+            let _ = eject(false);
+        }
+        Err(CoreError::Load("disc change failed".into()))
+    }
+    fn full_joypad(&self) -> bool {
+        self.host.canvas != (GBA_W, GBA_H)
+    }
     fn set_option(&mut self, key: &str, value: &str) {
         LibretroCore::set_option(self, key, value);
     }
 
     fn load(&mut self, rom: &Path) -> Result<(), CoreError> {
         self.unload();
-        self.rom = std::fs::read(rom)?;
+        if self.full_joypad()
+            && rom
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
+        {
+            let playlist = std::fs::read_to_string(rom)?;
+            let parent = rom.parent().unwrap_or(Path::new("."));
+            let mut count = 0;
+            for line in playlist
+                .lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            {
+                let disc = parent.join(line);
+                if !disc.is_file() {
+                    return Err(CoreError::Load(format!(
+                        "playlist disc missing: {}",
+                        disc.display()
+                    )));
+                }
+                count += 1;
+            }
+            if !(1..=8).contains(&count) {
+                return Err(CoreError::Load(
+                    "PlayStation playlists require 1 to 8 discs".into(),
+                ));
+            }
+        }
+        let mut system = SystemInfo::default();
+        unsafe { (self.api.get_system_info)(&mut system) };
+        self.rom = if system.need_fullpath {
+            std::fs::metadata(rom)?;
+            Vec::new()
+        } else {
+            std::fs::read(rom)?
+        };
+        let rom = std::fs::canonicalize(rom)?;
         self.rom_path = Some(
             CString::new(rom.as_os_str().as_encoded_bytes())
                 .map_err(|_| CoreError::Load("rom path contains a nul".into()))?,
         );
         let info = GameInfo {
             path: self.rom_path.as_ref().map_or(ptr::null(), |p| p.as_ptr()),
-            data: self.rom.as_ptr() as *const c_void,
+            data: if system.need_fullpath {
+                ptr::null()
+            } else {
+                self.rom.as_ptr() as *const c_void
+            },
             size: self.rom.len(),
             meta: ptr::null(),
         };
@@ -623,6 +756,11 @@ impl RetroCore for LibretroCore {
             unsafe { (self.api.serialize)(buf.as_mut_ptr() as *mut c_void, size) }
         };
         if ok {
+            let (disc, count) = self.discs();
+            if count > 1 {
+                buf.extend_from_slice(b"SLOTPSX1");
+                buf.extend_from_slice(&(disc as u32).to_le_bytes());
+            }
             Ok(buf)
         } else {
             Err(CoreError::State("serialize refused".into()))
@@ -630,6 +768,18 @@ impl RetroCore for LibretroCore {
     }
 
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        let data = if self.full_joypad()
+            && data.len() >= 12
+            && &data[data.len() - 12..data.len() - 4] == b"SLOTPSX1"
+        {
+            let index = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap()) as usize;
+            if self.discs().0 != index {
+                self.change_disc(index)?;
+            }
+            &data[..data.len() - 12]
+        } else {
+            data
+        };
         let ok = {
             let _a = Active::bind(&mut self.host);
             unsafe { (self.api.unserialize)(data.as_ptr() as *const c_void, data.len()) }
@@ -701,6 +851,8 @@ mod tests {
     fn host_with(options: HashMap<String, CString>, options_dirty: bool) -> Box<Host> {
         Box::new(Host {
             video: vec![0; VIDEO_BYTES],
+            canvas: (GBA_W, GBA_H),
+            disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
             inputs: [0; 2],

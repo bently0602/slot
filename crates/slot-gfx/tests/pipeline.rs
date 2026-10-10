@@ -410,6 +410,54 @@ fn a_quarter_turn_takes_the_top_left_corner_to_the_top_right() {
 }
 
 #[test]
+fn yaw_preserves_texture_orientation_and_resets_for_the_next_sprite() {
+    let Some((_g, _s, mut c)) = compositor() else {
+        return;
+    };
+    let tex = c.create_texture_nearest(
+        2,
+        2,
+        &[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+        ],
+    );
+    let plain = Draw::Tex {
+        x: 100.0,
+        y: 100.0,
+        w: 200.0,
+        h: 100.0,
+        tex,
+        alpha: 1.0,
+    };
+    c.begin_frame();
+    c.draw_list(&[plain]);
+    let baseline = c.read_frame();
+    c.begin_frame();
+    c.draw_list(&[plain.yawed(0.96)]);
+    let angled = c.read_frame();
+    assert_ne!(angled, baseline);
+    assert_eq!(px(&angled, 170, 125), [255, 0, 0]);
+    assert_eq!(px(&angled, 230, 125), [0, 255, 0]);
+    assert_eq!(px(&angled, 170, 175), [0, 0, 255]);
+    assert_eq!(px(&angled, 230, 175), [255, 255, 0]);
+    assert_eq!(px(&angled, 110, 150), [0, 0, 0]);
+    c.begin_frame();
+    c.draw_list(&[plain]);
+    assert_eq!(c.read_frame(), baseline, "yaw leaked into a flat sprite");
+    c.begin_frame();
+    c.draw_list(&[Draw::Yawed {
+        x: 100.0,
+        y: 100.0,
+        w: 200.0,
+        h: 100.0,
+        tex: Some(tex),
+        colour: [1.0; 4],
+        yaw: 0.0,
+    }]);
+    assert_eq!(c.read_frame(), baseline, "zero yaw changed the flat sprite");
+}
+
+#[test]
 fn the_default_source_rect_draws_exactly_as_before() {
     let Some((_g, _s, mut c)) = compositor() else {
         return;

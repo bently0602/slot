@@ -20,10 +20,25 @@ pub enum QuickRow {
     Turbo,
     Rewind,
     GbPalettes,
+    CoverFlow,
+    VideoOut,
+    HdmiOutput,
+    HdmiResolution,
+    HdmiScale,
+    HdmiMargin,
+    Controllers,
+    ControllerSelect,
+    ControllerSwapAb,
+    ControllerSwapXy,
+    ControllerDeadzone,
+    ControllerPause,
+    ControllerReset,
+    DockedLid,
+    AudioOutput,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 14] = [
+    pub const ALL: [QuickRow; 29] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -38,20 +53,38 @@ impl QuickRow {
         QuickRow::Turbo,
         QuickRow::Rewind,
         QuickRow::GbPalettes,
+        QuickRow::CoverFlow,
+        QuickRow::VideoOut,
+        QuickRow::HdmiOutput,
+        QuickRow::HdmiResolution,
+        QuickRow::HdmiScale,
+        QuickRow::HdmiMargin,
+        QuickRow::Controllers,
+        QuickRow::ControllerSelect,
+        QuickRow::ControllerSwapAb,
+        QuickRow::ControllerSwapXy,
+        QuickRow::ControllerDeadzone,
+        QuickRow::ControllerPause,
+        QuickRow::ControllerReset,
+        QuickRow::DockedLid,
+        QuickRow::AudioOutput,
     ];
 
-    pub const MAIN: [QuickRow; 4] = [
+    pub const MAIN: [QuickRow; 6] = [
         QuickRow::Screen,
+        QuickRow::VideoOut,
+        QuickRow::Controllers,
         QuickRow::Game,
         QuickRow::DateTime,
         QuickRow::About,
     ];
 
-    pub const SCREEN: [QuickRow; 4] = [
+    pub const SCREEN: [QuickRow; 5] = [
         QuickRow::GbaShader,
         QuickRow::GbShader,
         QuickRow::ColourCorrection,
         QuickRow::GbPalettes,
+        QuickRow::CoverFlow,
     ];
 
     pub const GAME: [QuickRow; 6] = [
@@ -67,12 +100,43 @@ impl QuickRow {
         self as usize
     }
 
+    pub const VIDEO: [QuickRow; 6] = [
+        QuickRow::HdmiOutput,
+        QuickRow::HdmiResolution,
+        QuickRow::HdmiScale,
+        QuickRow::HdmiMargin,
+        QuickRow::DockedLid,
+        QuickRow::AudioOutput,
+    ];
+
+    pub const CONTROLLERS: [QuickRow; 6] = [
+        QuickRow::ControllerSelect,
+        QuickRow::ControllerSwapAb,
+        QuickRow::ControllerSwapXy,
+        QuickRow::ControllerDeadzone,
+        QuickRow::ControllerPause,
+        QuickRow::ControllerReset,
+    ];
+
     pub fn page(self) -> &'static [QuickRow] {
         match self {
+            QuickRow::ControllerSelect
+            | QuickRow::ControllerSwapAb
+            | QuickRow::ControllerSwapXy
+            | QuickRow::ControllerDeadzone
+            | QuickRow::ControllerPause
+            | QuickRow::ControllerReset => &QuickRow::CONTROLLERS,
+            QuickRow::HdmiOutput
+            | QuickRow::HdmiResolution
+            | QuickRow::HdmiScale
+            | QuickRow::HdmiMargin
+            | QuickRow::DockedLid
+            | QuickRow::AudioOutput => &QuickRow::VIDEO,
             QuickRow::GbaShader
             | QuickRow::GbShader
             | QuickRow::ColourCorrection
-            | QuickRow::GbPalettes => &QuickRow::SCREEN,
+            | QuickRow::GbPalettes
+            | QuickRow::CoverFlow => &QuickRow::SCREEN,
             QuickRow::FastForward
             | QuickRow::FastForwardSound
             | QuickRow::Rewind
@@ -87,6 +151,8 @@ impl QuickRow {
         match self.page()[0] {
             QuickRow::GbaShader => Some(QuickRow::Screen),
             QuickRow::FastForward => Some(QuickRow::Game),
+            QuickRow::HdmiOutput => Some(QuickRow::VideoOut),
+            QuickRow::ControllerSelect => Some(QuickRow::Controllers),
             _ => None,
         }
     }
@@ -95,6 +161,8 @@ impl QuickRow {
         match self {
             QuickRow::Screen => Some(QuickRow::SCREEN[0]),
             QuickRow::Game => Some(QuickRow::GAME[0]),
+            QuickRow::VideoOut => Some(QuickRow::VIDEO[0]),
+            QuickRow::Controllers => Some(QuickRow::CONTROLLERS[0]),
             _ => None,
         }
     }
@@ -119,13 +187,34 @@ impl QuickRow {
             QuickRow::Turbo => "Turbo Buttons",
             QuickRow::Rewind => "Rewind",
             QuickRow::GbPalettes => "GB Palettes",
+            QuickRow::CoverFlow => "Cover Flow",
+            QuickRow::VideoOut => "Video Out",
+            QuickRow::HdmiOutput => "Output (restart)",
+            QuickRow::HdmiResolution => "Resolution (restart)",
+            QuickRow::HdmiScale => "HDMI Scaling",
+            QuickRow::HdmiMargin => "HDMI Safe Area",
+            QuickRow::Controllers => "Controllers",
+            QuickRow::ControllerSelect => "Controller",
+            QuickRow::ControllerSwapAb => "Swap A / B",
+            QuickRow::ControllerSwapXy => "Swap X / Y",
+            QuickRow::ControllerDeadzone => "Stick Dead Zone",
+            QuickRow::ControllerPause => "Pause if Lost",
+            QuickRow::ControllerReset => "Reset Profile",
+            QuickRow::DockedLid => "Keep Awake Docked",
+            QuickRow::AudioOutput => "Audio Output",
         }
     }
 
     pub fn opens(self) -> bool {
         matches!(
             self,
-            QuickRow::DateTime | QuickRow::About | QuickRow::Screen | QuickRow::Game
+            QuickRow::DateTime
+                | QuickRow::About
+                | QuickRow::Screen
+                | QuickRow::Game
+                | QuickRow::VideoOut
+                | QuickRow::Controllers
+                | QuickRow::ControllerReset
         )
     }
 
@@ -152,10 +241,26 @@ pub enum QuickValue {
     Grid,
     Dot,
     Simpletex,
+    Auto,
+    Internal,
+    P720,
+    P1080,
+    Fit,
+    Integer,
+    Stretch,
+    Percent5,
+    Percent10,
+    Percent15,
+    Percent20,
+    Percent25,
+    Percent30,
+    Percent40,
+    Device,
+    Hdmi,
 }
 
 impl QuickValue {
-    pub const ALL: [QuickValue; 10] = [
+    pub const ALL: [QuickValue; 26] = [
         QuickValue::Speed2,
         QuickValue::Speed3,
         QuickValue::Speed4,
@@ -166,6 +271,22 @@ impl QuickValue {
         QuickValue::Grid,
         QuickValue::Dot,
         QuickValue::Simpletex,
+        QuickValue::Auto,
+        QuickValue::Internal,
+        QuickValue::P720,
+        QuickValue::P1080,
+        QuickValue::Fit,
+        QuickValue::Integer,
+        QuickValue::Stretch,
+        QuickValue::Percent5,
+        QuickValue::Percent10,
+        QuickValue::Percent15,
+        QuickValue::Percent20,
+        QuickValue::Percent25,
+        QuickValue::Percent30,
+        QuickValue::Percent40,
+        QuickValue::Device,
+        QuickValue::Hdmi,
     ];
 
     pub fn index(self) -> usize {
@@ -174,6 +295,8 @@ impl QuickValue {
 
     pub fn text(self) -> &'static str {
         match self {
+            QuickValue::Device => "Device",
+            QuickValue::Hdmi => "HDMI",
             QuickValue::Speed2 => "2×",
             QuickValue::Speed3 => "3×",
             QuickValue::Speed4 => "4×",
@@ -184,6 +307,20 @@ impl QuickValue {
             QuickValue::Grid => "Grid",
             QuickValue::Dot => "Dot",
             QuickValue::Simpletex => "Simpletex",
+            QuickValue::Auto => "Auto",
+            QuickValue::Internal => "Internal",
+            QuickValue::P720 => "720p / 60",
+            QuickValue::P1080 => "1080p / 60",
+            QuickValue::Fit => "Fit",
+            QuickValue::Integer => "Integer",
+            QuickValue::Stretch => "Stretch",
+            QuickValue::Percent5 => "5%",
+            QuickValue::Percent10 => "10%",
+            QuickValue::Percent15 => "15%",
+            QuickValue::Percent20 => "20%",
+            QuickValue::Percent25 => "25%",
+            QuickValue::Percent30 => "30%",
+            QuickValue::Percent40 => "40%",
         }
     }
 
@@ -298,6 +435,7 @@ pub struct QuickMenu<'a> {
     pub row: QuickRow,
     pub values: [Option<QuickValue>; QuickRow::ALL.len()],
     pub clock: Option<[(TexId, u32, u32); 2]>,
+    pub controller: Option<[(TexId, u32, u32); 2]>,
     pub faces: Option<&'a QuickMenuFaces>,
 }
 
@@ -329,6 +467,7 @@ impl QuickMenu<'_> {
             }
             let value = match row {
                 QuickRow::DateTime => self.clock.map(|c| c[lit as usize]),
+                QuickRow::ControllerSelect => self.controller.map(|c| c[lit as usize]),
                 _ => self.values[row.index()]
                     .and_then(|v| faces.values.get(v.index()))
                     .map(|v| v[lit as usize]),

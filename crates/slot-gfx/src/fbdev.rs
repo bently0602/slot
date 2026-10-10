@@ -142,7 +142,7 @@ impl FbdevSurface {
         FbdevSurface::open(hint)
     }
 
-    fn open(hint: (u32, u32)) -> Result<Self, GfxError> {
+    pub fn open(hint: (u32, u32)) -> Result<Self, GfxError> {
         let egl = Egl::load()?;
         let gles = open("libGLESv2.so.2").or_else(|_| open("libGLESv2.so"))?;
         unsafe {

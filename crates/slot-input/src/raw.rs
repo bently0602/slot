@@ -31,4 +31,8 @@ pub type Millis = u64;
 
 pub trait InputSource {
     fn poll(&mut self, now: Millis) -> Vec<RawEvent>;
+    fn configure_controllers(&mut self, _: &crate::ControllerConfig) {}
+    fn controller_status(&self) -> crate::ControllerStatus {
+        crate::ControllerStatus::default()
+    }
 }

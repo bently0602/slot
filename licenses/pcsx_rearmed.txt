@@ -1,0 +1,14 @@
+PCSX ReARMed (libretro)
+Upstream: https://github.com/libretro/pcsx_rearmed
+Pinned source: c8816799b50388e61cfe237fe2cdbb7d8175f20a
+
+PCSX ReARMed is distributed under GPL version 2 or later. Individual bundled
+dependencies retain their own licenses; consult COPYING and the dependency license
+files in the corresponding source archive. The source includes libpicofe at its
+pinned submodule revision.
+
+Device bundles ship pcsx_rearmed_libretro.so.source.tar.gz in System/licenses.
+Desktop setup ships pcsx_rearmed-source.tar.gz in System/licenses. Build metadata
+records the source commit, target architecture and compiler recipe. The complete
+build wrapper is cores/pcsx/build.sh in the slot source distribution. No PlayStation
+BIOS or commercial game files are included.

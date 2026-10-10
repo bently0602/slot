@@ -27,6 +27,7 @@ pub struct GamePass {
     effect: ScreenEffect,
     power: f32,
     src: [f32; 4],
+    size: (u32, u32),
 }
 
 impl GamePass {
@@ -81,6 +82,7 @@ impl GamePass {
             effect: ScreenEffect::Lcd3x,
             power: 1.0,
             src: WHOLE_TEXTURE,
+            size: (SRC_W, SRC_H),
         })
     }
 
@@ -119,8 +121,28 @@ impl GamePass {
     }
 
     pub fn upload(&mut self, xrgb8888: &[u8]) {
-        if xrgb8888.len() < (SRC_W * SRC_H * 4) as usize {
+        let size = if xrgb8888.len() == 640 * 480 * 4 {
+            (640, 480)
+        } else {
+            (SRC_W, SRC_H)
+        };
+        if xrgb8888.len() < (size.0 * size.1 * 4) as usize {
             return;
+        }
+        if self.size != size {
+            let game = crate::gl::texture(
+                size.0,
+                size.1,
+                gl::NEAREST,
+                gl::CLAMP_TO_EDGE,
+                gl::BGRA,
+                None,
+            );
+            unsafe {
+                gl::DeleteTextures(1, &self.game);
+            }
+            self.game = game;
+            self.size = size;
         }
         unsafe {
             gl::BindTexture(gl::TEXTURE_2D, self.game);
@@ -130,8 +152,8 @@ impl GamePass {
                 0,
                 0,
                 0,
-                SRC_W as i32,
-                SRC_H as i32,
+                size.0 as i32,
+                size.1 as i32,
                 gl::BGRA,
                 gl::UNSIGNED_BYTE,
                 xrgb8888.as_ptr() as *const std::ffi::c_void,
@@ -144,17 +166,27 @@ impl GamePass {
             ScreenEffect::Grid => whole_scale_source(self.src, self.fbo_scale),
             _ => self.src,
         };
-        self.draw_source(self.game, quad, src);
+        self.draw_source(self.game, quad, src, self.size);
     }
 
     pub fn draw_still(&self, tex: gl::types::GLuint, quad: &Quad) {
-        self.draw_source(tex, quad, WHOLE_TEXTURE);
+        self.draw_source(tex, quad, WHOLE_TEXTURE, (SRC_W, SRC_H));
     }
 
-    fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4]) {
-        let (x, y, w, h) = screen_rect(self.power);
+    fn draw_source(&self, tex: gl::types::GLuint, quad: &Quad, src: [f32; 4], size: (u32, u32)) {
+        let (mut x, y, mut w, h) = screen_rect(self.power);
+        if size == (640, 480) {
+            let fitted = h * 4.0 / 3.0;
+            x += (w - fitted) / 2.0;
+            w = fitted;
+        }
         unsafe {
             gl::UseProgram(self.prog);
+            gl::Uniform2f(
+                crate::gl::uniform_location(self.prog, "u_src"),
+                size.0 as f32,
+                size.1 as f32,
+            );
             gl::Uniform4f(self.u_rect, x, y, w, h);
             gl::Uniform4f(self.u_uv, src[0], src[1], src[2], src[3]);
             gl::Uniform1f(self.u_bright, screen_brightness(self.power));

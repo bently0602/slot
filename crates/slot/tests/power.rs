@@ -61,7 +61,7 @@ fn doze_timeout_powers_off_with_the_cart_still_seated() {
 
 #[test]
 fn lid_close_on_the_shelf_wakes_back_to_the_shelf() {
-    let d = tmp_root_with_carts(&["Emerald"]);
+    let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
     let mut a = boot(d.path());
     a.set_snapshot(StubSnapshot::boxed());
     a.apply(Action::LidClose);

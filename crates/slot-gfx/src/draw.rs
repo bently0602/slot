@@ -38,10 +38,56 @@ pub enum Draw {
         alpha: f32,
         turn: f32,
     },
+    /// A sprite rotated about its vertical axis, with perspective-correct texture mapping.
+    Yawed {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tex: Option<TexId>,
+        colour: [f32; 4],
+        yaw: f32,
+    },
     Game,
     Shot {
         tex: TexId,
     },
+}
+
+impl Draw {
+    pub fn yawed(self, yaw: f32) -> Self {
+        if yaw == 0.0 {
+            return self;
+        }
+        match self {
+            Draw::Rect { x, y, w, h, colour } => Draw::Yawed {
+                x,
+                y,
+                w,
+                h,
+                tex: None,
+                colour,
+                yaw,
+            },
+            Draw::Tex {
+                x,
+                y,
+                w,
+                h,
+                tex,
+                alpha,
+            } => Draw::Yawed {
+                x,
+                y,
+                w,
+                h,
+                tex: Some(tex),
+                colour: [1.0, 1.0, 1.0, alpha],
+                yaw,
+            },
+            _ => self,
+        }
+    }
 }
 
 pub struct Sprites {
@@ -51,6 +97,7 @@ pub struct Sprites {
     u_rect: gl::types::GLint,
     u_colour: gl::types::GLint,
     u_turn: gl::types::GLint,
+    u_yaw: gl::types::GLint,
 }
 
 impl Sprites {
@@ -64,7 +111,7 @@ impl Sprites {
             gl::RGBA,
             Some(&[255u8; 4]),
         );
-        let (u_rect, u_colour, u_turn);
+        let (u_rect, u_colour, u_turn, u_yaw);
         unsafe {
             gl::UseProgram(prog);
             gl::Uniform1i(crate::gl::uniform_location(prog, "u_tex"), 0);
@@ -76,6 +123,7 @@ impl Sprites {
             u_rect = crate::gl::uniform_location(prog, "u_rect");
             u_colour = crate::gl::uniform_location(prog, "u_colour");
             u_turn = crate::gl::uniform_location(prog, "u_turn");
+            u_yaw = crate::gl::uniform_location(prog, "u_yaw");
         }
         Ok(Sprites {
             prog,
@@ -84,6 +132,7 @@ impl Sprites {
             u_rect,
             u_colour,
             u_turn,
+            u_yaw,
         })
     }
 
@@ -137,8 +186,8 @@ impl Sprites {
             gl::ActiveTexture(gl::TEXTURE0);
         }
         for item in items {
-            let (x, y, w, h, tex, colour, turn) = match *item {
-                Draw::Rect { x, y, w, h, colour } => (x, y, w, h, self.white, colour, 0.0),
+            let (x, y, w, h, tex, colour, turn, yaw) = match *item {
+                Draw::Rect { x, y, w, h, colour } => (x, y, w, h, self.white, colour, 0.0, 0.0),
                 Draw::Tex {
                     x,
                     y,
@@ -147,7 +196,7 @@ impl Sprites {
                     tex,
                     alpha,
                 } => match self.textures.get(tex.0) {
-                    Some(t) => (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], 0.0),
+                    Some(t) => (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], 0.0, 0.0),
                     None => continue,
                 },
                 Draw::Turned {
@@ -159,9 +208,27 @@ impl Sprites {
                     alpha,
                     turn,
                 } => match self.textures.get(tex.0) {
-                    Some(t) => (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], turn),
+                    Some(t) => (x, y, w, h, *t, [1.0, 1.0, 1.0, alpha], turn, 0.0),
                     None => continue,
                 },
+                Draw::Yawed {
+                    x,
+                    y,
+                    w,
+                    h,
+                    tex,
+                    colour,
+                    yaw,
+                } => {
+                    let texture = match tex {
+                        Some(id) => match self.textures.get(id.0) {
+                            Some(t) => *t,
+                            None => continue,
+                        },
+                        None => self.white,
+                    };
+                    (x, y, w, h, texture, colour, 0.0, yaw)
+                }
                 Draw::Game | Draw::Shot { .. } => continue,
             };
             let (cos, sin) = if turn == 0.0 {
@@ -173,6 +240,7 @@ impl Sprites {
                 gl::BindTexture(gl::TEXTURE_2D, tex);
                 gl::Uniform4f(self.u_rect, x, y, w, h);
                 gl::Uniform2f(self.u_turn, cos, sin);
+                gl::Uniform2f(self.u_yaw, yaw.cos(), yaw.sin());
                 gl::Uniform4f(self.u_colour, colour[0], colour[1], colour[2], colour[3]);
             }
             quad.draw();

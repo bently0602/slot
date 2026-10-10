@@ -95,6 +95,10 @@ pub struct SlotChrome<'a> {
 
 impl SlotChrome<'_> {
     pub fn draw(&self, out: &mut Vec<Draw>) {
+        self.draw_with_yaw(0.0, out);
+    }
+
+    pub fn draw_with_yaw(&self, yaw: f32, out: &mut Vec<Draw>) {
         let seat = self.seat.clamp(0.0, 1.0);
         let dim = self.dim.clamp(0.0, 1.0);
         if dim > 0.0 {
@@ -127,7 +131,7 @@ impl SlotChrome<'_> {
         let x = centre + (CX - centre) * k - cw / 2.0;
         let y = foot0 + (seated_foot - foot0) * travel - ch;
         let cart_alpha = if seat >= 1.0 { chrome } else { 1.0 };
-        out.push(match self.face {
+        let face = match self.face {
             Some(tex) => Draw::Tex {
                 x,
                 y,
@@ -151,7 +155,8 @@ impl SlotChrome<'_> {
                     ],
                 }
             }
-        });
+        };
+        out.push(face.yawed(yaw * (1.0 - k)));
 
         if let Some((tex, alpha)) = self.alert {
             let (w, h) = icon_box(ALERT_PX);

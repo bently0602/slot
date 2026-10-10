@@ -117,6 +117,8 @@ fn up_and_down_move_the_bar_and_wrap_at_the_ends() {
     );
     for want in [
         QuickRow::Screen,
+        QuickRow::VideoOut,
+        QuickRow::Controllers,
         QuickRow::Game,
         QuickRow::DateTime,
         QuickRow::About,
@@ -245,6 +247,7 @@ fn screen_opens_a_page_of_its_own_and_b_comes_back_to_it() {
         QuickRow::GbShader,
         QuickRow::ColourCorrection,
         QuickRow::GbPalettes,
+        QuickRow::CoverFlow,
         QuickRow::GbaShader,
     ] {
         press(&mut a, Btn::Down);
@@ -624,4 +627,117 @@ fn gb_palettes_flips_on_either_arrow_and_saves() {
             Some(QuickValue::flag(want))
         );
     }
+}
+
+#[test]
+fn coverflow_toggle_changes_the_shelf_and_survives_a_restart() {
+    let (d, mut a, _) = on_carousel();
+    open_at(&mut a, QuickRow::CoverFlow);
+    assert_eq!(a.quick_value(QuickRow::CoverFlow), Some(QuickValue::Off));
+    for (btn, want) in [(Btn::Right, true), (Btn::Left, false), (Btn::Left, true)] {
+        press(&mut a, btn);
+        assert_eq!(read_slot_state(d.path()).coverflow, want);
+        assert_eq!(
+            a.quick_value(QuickRow::CoverFlow),
+            Some(QuickValue::flag(want))
+        );
+        a.apply(Action::QuickMenu);
+        a.apply(Action::QuickMenu);
+        let mut out = Vec::new();
+        a.draw(&mut out);
+        assert_eq!(out.iter().any(|d| matches!(d, Draw::Yawed { .. })), want);
+        assert_eq!(a.selected_stem(), Some("Emerald"));
+        open_at(&mut a, QuickRow::CoverFlow);
+    }
+    let (rebooted, _) = app_booting_at(d.path(), CLOCK_IS_SET);
+    assert_eq!(
+        rebooted.quick_value(QuickRow::CoverFlow),
+        Some(QuickValue::On)
+    );
+    let mut out = Vec::new();
+    rebooted.draw(&mut out);
+    assert!(out.iter().any(|d| matches!(d, Draw::Yawed { .. })));
+}
+
+#[test]
+fn coverflow_toggle_applies_to_every_platform_shelf() {
+    let (d, _, _) = on_carousel();
+    for stem in ["Tetris", "Zelda"] {
+        common::write_gb_cart(&d, stem, &stem.to_uppercase());
+        let mut rom = vec![0u8; 0x150];
+        rom[0x134..0x134 + stem.len()].copy_from_slice(stem.as_bytes());
+        rom[0x143] = 0x80;
+        std::fs::write(d.path().join(format!("Games/GBC/{stem}.gbc")), rom).unwrap();
+    }
+    let (mut a, _) = app_booting_at(d.path(), CLOCK_IS_SET);
+    open_at(&mut a, QuickRow::CoverFlow);
+    press(&mut a, Btn::Right);
+    a.apply(Action::QuickMenu);
+    a.apply(Action::QuickMenu);
+    for _ in 0..3 {
+        let mut out = Vec::new();
+        a.draw(&mut out);
+        assert!(out.iter().any(|d| matches!(d, Draw::Yawed { .. })));
+        press(&mut a, Btn::R1);
+    }
+    open_at(&mut a, QuickRow::CoverFlow);
+    press(&mut a, Btn::Left);
+    a.apply(Action::QuickMenu);
+    a.apply(Action::QuickMenu);
+    for _ in 0..3 {
+        let mut out = Vec::new();
+        a.draw(&mut out);
+        assert!(!out.iter().any(|d| matches!(d, Draw::Yawed { .. })));
+        press(&mut a, Btn::R1);
+    }
+}
+
+#[test]
+fn video_out_changes_persist_and_b_returns_to_its_parent() {
+    let (d, mut a, clock) = on_carousel();
+    open_at(&mut a, QuickRow::VideoOut);
+    press(&mut a, Btn::A);
+    assert_eq!(a.quick_menu(), Some(QuickRow::HdmiOutput));
+    assert_eq!(a.quick_value(QuickRow::HdmiOutput), Some(QuickValue::Auto));
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    press(&mut a, Btn::Left);
+    let saved = read_slot_state(d.path());
+    assert!(!saved.hdmi_auto);
+    assert!(saved.hdmi_1080p);
+    assert_eq!(saved.hdmi_scale, slot_store::HdmiScale::Integer);
+    assert_eq!(saved.hdmi_margin, 10);
+    press(&mut a, Btn::Down);
+    assert_eq!(a.quick_menu(), Some(QuickRow::DockedLid));
+    assert_eq!(a.quick_value(QuickRow::DockedLid), Some(QuickValue::On));
+    press(&mut a, Btn::Right);
+    press(&mut a, Btn::Down);
+    assert_eq!(a.quick_menu(), Some(QuickRow::AudioOutput));
+    assert_eq!(a.quick_value(QuickRow::AudioOutput), Some(QuickValue::Auto));
+    press(&mut a, Btn::Left);
+    assert_eq!(a.quick_value(QuickRow::AudioOutput), Some(QuickValue::Hdmi));
+    let saved = read_slot_state(d.path());
+    assert!(!saved.docked_lid);
+    assert_eq!(saved.audio_output, slot_store::AudioOutput::Hdmi);
+    press(&mut a, Btn::Down);
+    assert_eq!(a.quick_menu(), Some(QuickRow::HdmiOutput));
+    press(&mut a, Btn::B);
+    assert_eq!(a.quick_menu(), Some(QuickRow::VideoOut));
+    let (rebooted, _) = app_booting_at(d.path(), clock.get());
+    assert_eq!(
+        rebooted.quick_value(QuickRow::HdmiOutput),
+        Some(QuickValue::Internal)
+    );
+    assert_eq!(
+        rebooted.quick_value(QuickRow::HdmiResolution),
+        Some(QuickValue::P1080)
+    );
+    assert_eq!(
+        rebooted.hdmi_scaling(),
+        (slot_store::HdmiScale::Integer, 10)
+    );
 }

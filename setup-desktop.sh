@@ -9,7 +9,7 @@ for option in "$@"; do
     --run) run=true ;;
     --native-graphics) native_graphics=true ;;
     -h|--help)
-      printf 'Usage: bash setup-desktop.sh [--run] [--native-graphics]\n\nInstall prerequisites, build slot and mGBA, and prepare ./sdcard.\nAdd --run to launch the desktop app. Safe to rerun; existing content is kept.\nWSL launches use X11 and software rendering. --native-graphics keeps your normal graphics configuration.\n'
+      printf 'Usage: bash setup-desktop.sh [--run] [--native-graphics]\n\nInstall prerequisites, build slot, mGBA and PCSX ReARMed, and prepare ./sdcard.\nAdd --run to launch the desktop app. Safe to rerun; existing content is kept.\nWSL launches use X11 and software rendering. --native-graphics keeps your normal graphics configuration.\n'
       exit 0
       ;;
     *) printf 'Unknown option: %s\nUse --help for usage.\n' "$option" >&2; exit 2 ;;
@@ -34,7 +34,7 @@ core="$build_dir/mgba_libretro.so"
 
 # Install only missing packages, so subsequent runs need no sudo or apt update.
 packages=(
-  ca-certificates curl git file build-essential cmake pkg-config
+  ca-certificates curl git file build-essential cmake pkg-config zlib1g-dev
   libasound2-dev libasound2-plugins libudev-dev libwayland-dev
   libxkbcommon-dev libxkbcommon-x11-dev libegl1 libegl-mesa0
   libgl1 libglx-mesa0 libgl1-mesa-dri
@@ -65,8 +65,9 @@ fi
 # Read the repository pins rather than maintaining another copy of the versions.
 rust_channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
 mgba_commit="$(sed -n 's/^  MGBA_COMMIT: \([0-9a-f]*\)[[:space:]]*$/\1/p' taskfile.yml)"
-if [[ -z $rust_channel || ! $mgba_commit =~ ^[0-9a-f]{40}$ ]]; then
-  printf 'Could not read the Rust or mGBA version pinned by this repository.\n' >&2
+pcsx_commit="$(sed -n 's/^  PCSX_COMMIT: \([0-9a-f]*\)[[:space:]]*$/\1/p' taskfile.yml)"
+if [[ -z $rust_channel || ! $mgba_commit =~ ^[0-9a-f]{40}$ || ! $pcsx_commit =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'Could not read the Rust or core versions pinned by this repository.\n' >&2
   exit 1
 fi
 export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
@@ -114,6 +115,27 @@ if ! cmp -s "$core.meta" "$content_root/System/mgba_libretro.so.meta"; then
   cp "$core.meta" "$content_root/System/mgba_libretro.so.meta"
 fi
 
+pcsx_core="$build_dir/pcsx_rearmed_libretro.so"
+sh cores/pcsx/build.sh build "$pcsx_commit" "$repo_dir/target/pcsx-host" "$pcsx_core" host
+if ! file "$pcsx_core" | grep -q "$core_arch"; then
+  printf 'The PlayStation core does not match the desktop architecture.\n' >&2
+  exit 1
+fi
+mkdir -p "$content_root/System/licenses"
+for suffix in '' .meta; do
+  if ! cmp -s "$pcsx_core$suffix" "$content_root/System/pcsx_rearmed_libretro.so$suffix"; then
+    cp "$pcsx_core$suffix" "$content_root/System/pcsx_rearmed_libretro.so$suffix"
+  fi
+done
+if ! cmp -s "$pcsx_core.source.tar.gz" "$content_root/System/licenses/pcsx_rearmed-source.tar.gz"; then
+  cp "$pcsx_core.source.tar.gz" "$content_root/System/licenses/pcsx_rearmed-source.tar.gz"
+fi
+for notice in pcsx_rearmed.txt pcsx_rearmed-GPL-2.0.txt; do
+  if ! cmp -s "licenses/$notice" "$content_root/System/licenses/$notice"; then
+    cp "licenses/$notice" "$content_root/System/licenses/$notice"
+  fi
+done
+
 # CPAL uses ALSA on Linux; WSLg exposes PulseAudio. Keep this configuration local
 # to slot, and respect an explicitly supplied ALSA_CONFIG_PATH.
 if [[ -n ${WSL_DISTRO_NAME:-} && -z ${ALSA_CONFIG_PATH:-} ]]; then
@@ -134,6 +156,7 @@ fi
 
 printf '\nDesktop setup is ready at %s\n' "$content_root"
 printf 'Put unzipped ROMs in Games/GBA, Games/GB or Games/GBC; use the mGBA core.\n'
+printf 'PlayStation: put CHD, CUE/BIN or PBP games in Games/PSX and your PS1 BIOS in BIOS.\n'
 printf 'Keys: arrows, Z/X (A/B), A/S (shoulders), Enter (Start), right Shift (Select), Tab (Menu).\n'
 if $run; then
   if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then

@@ -15,14 +15,19 @@ struct Slot {
     gfx: Option<(HostSurface, Compositor)>,
     frontend: Frontend,
     input: HostInput,
+    hdmi_preview: bool,
 }
 
 impl Slot {
     fn new() -> Self {
+        let hdmi_preview = std::env::var("SLOT_HDMI_PREVIEW").is_ok_and(|v| v == "1");
+        let mut frontend = Frontend::boot(Box::new(SimPlatform::new()));
+        frontend.set_docked(hdmi_preview);
         Slot {
             gfx: None,
-            frontend: Frontend::boot(Box::new(SimPlatform::new())),
+            frontend,
             input: HostInput::new(),
+            hdmi_preview,
         }
     }
 }
@@ -57,6 +62,8 @@ impl ApplicationHandler for Slot {
             WindowEvent::Resized(size) => surface.resize(size),
             WindowEvent::RedrawRequested => {
                 let began = Instant::now();
+                compositor
+                    .set_hdmi_scaling(self.hdmi_preview.then(|| self.frontend.hdmi_scaling()));
                 self.frontend.render(compositor, surface.window_size());
                 let swap = std::time::Instant::now();
                 let swapped = surface.swap();

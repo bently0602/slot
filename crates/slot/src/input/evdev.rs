@@ -124,8 +124,42 @@ pub fn pick_devices(dev: &Path, sys: &Path) -> Vec<PathBuf> {
 fn wanted_node(device: &Path) -> bool {
     let cap = |file: &str| std::fs::read_to_string(device.join("capabilities").join(file));
     let keys = cap("key").unwrap_or_default();
+    if external_bus(device) {
+        return has_bit(&keys, 0x130);
+    }
     let lid = cap("sw").is_ok_and(|sw| has_bit(&sw, SW_LID));
     lid || WANTED.iter().any(|bit| has_bit(&keys, *bit))
+}
+
+fn external_bus(device: &Path) -> bool {
+    std::fs::read_to_string(device.join("id/bustype"))
+        .ok()
+        .and_then(|s| u16::from_str_radix(s.trim(), 16).ok())
+        .is_some_and(|bus| [3, 5].contains(&bus)) // BUS_USB / BUS_BLUETOOTH
+}
+
+pub fn is_controller(sys: &Path, node: &Path) -> bool {
+    node.file_name()
+        .is_some_and(|name| external_bus(&sys.join(name).join("device")))
+}
+
+pub fn xinput_layout(sys: &Path, node: &Path) -> bool {
+    let name = device_name(sys, node).to_ascii_lowercase();
+    if name.contains("x-box") || name.contains("xbox") {
+        return true;
+    }
+    let Some(event) = node.file_name() else {
+        return false;
+    };
+    let device = sys.join(event).join("device");
+    let xpad = |path: &Path| {
+        std::fs::read_link(path).is_ok_and(|p| p.file_name().is_some_and(|s| s == "xpad"))
+    };
+    if xpad(&device.join("device/driver")) {
+        return true;
+    }
+    std::fs::canonicalize(device)
+        .is_ok_and(|p| p.ancestors().take(6).any(|a| xpad(&a.join("driver"))))
 }
 
 pub fn device_name(sys: &Path, node: &Path) -> String {
@@ -133,4 +167,20 @@ pub fn device_name(sys: &Path, node: &Path) -> String {
         .and_then(|n| std::fs::read_to_string(sys.join(n).join("device/name")).ok())
         .map(|n| n.trim().to_string())
         .unwrap_or_else(|| node.display().to_string())
+}
+
+pub fn controller_identity(sys: &Path, node: &Path) -> String {
+    let device = sys
+        .join(node.file_name().unwrap_or_default())
+        .join("device");
+    let mut identity = device_name(sys, node);
+    for attr in ["id/vendor", "id/product", "id/version", "uniq"] {
+        identity.push('|');
+        identity.push_str(
+            std::fs::read_to_string(device.join(attr))
+                .unwrap_or_default()
+                .trim(),
+        );
+    }
+    identity
 }

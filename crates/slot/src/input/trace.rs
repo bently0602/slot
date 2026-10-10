@@ -44,21 +44,35 @@ pub fn survey(dev: &Path, sys: &Path) -> Vec<String> {
                     .unwrap_or_else(|_| "-".to_string())
             };
             format!(
-                "{file} {state} name={:?} key=[{}] sw=[{}]",
+                "{file} {state} name={:?} key=[{}] sw=[{}] abs=[{}] bus=[{}]",
                 device_name(sys, node),
                 cap("key"),
-                cap("sw")
+                cap("sw"),
+                cap("abs"),
+                std::fs::read_to_string(sys.join(&*file).join("device/id/bustype"))
+                    .unwrap_or_default()
+                    .trim()
             )
         })
         .collect()
 }
 
 pub fn event_line(node: &str, ms: u128, ev: Ev) -> String {
+    mapped_event_line(node, ms, ev, false, false)
+}
+
+pub fn mapped_event_line(node: &str, ms: u128, ev: Ev, controller: bool, xinput: bool) -> String {
     let btn = match ev.kind {
-        EV_KEY => code_to_btn(ev.code).map_or_else(|| "unmapped".to_string(), |b| format!("{b:?}")),
+        EV_KEY => (if controller {
+            super::controller::mapped_button(ev.code, xinput)
+        } else {
+            code_to_btn(ev.code)
+        })
+        .map_or_else(|| "unmapped".to_string(), |b| format!("{b:?}")),
         EV_SW if ev.code == SW_LID => "Lid".to_string(),
         EV_ABS if ev.code == ABS_HAT0X => "hat0x".to_string(),
         EV_ABS if ev.code == ABS_HAT0Y => "hat0y".to_string(),
+        EV_ABS if controller => "controller axis".to_string(),
         _ => "ignored".to_string(),
     };
     format!(

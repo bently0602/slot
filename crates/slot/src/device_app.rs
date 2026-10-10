@@ -64,21 +64,70 @@ impl Pacer {
 }
 
 pub fn run() {
+    if run_session() {
+        // Restart the process to reset the vendor EGL framebuffer cache. BaseOS
+        // launches through ld-linux explicitly, so retain that invocation too.
+        use std::os::unix::process::CommandExt;
+        let executable = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("slot: HDMI restart executable: {e}");
+                return;
+            }
+        };
+        let mut command = std::process::Command::new(&executable);
+        let args: Vec<_> = std::env::args_os().collect();
+        if executable
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("ld-linux"))
+        {
+            command.args(&args);
+        } else {
+            command.args(args.iter().skip(1));
+        }
+        eprintln!("slot: restarting display; current game saved");
+        let error = command.exec();
+        eprintln!("slot: HDMI restart: {error}");
+    }
+}
+
+fn run_session() -> bool {
     slot::boot_time::mark("start");
     let _ = std::thread::Builder::new()
         .name("slot-fonts".into())
         .spawn(slot_ui::warm_fonts);
-    let audio = std::thread::Builder::new()
-        .name("slot-audio-open".into())
-        .spawn(slot::audio::opened_sink);
     let root = std::env::var_os("SLOT_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(CARD));
-    let mut surface = match FbdevSurface::new() {
+    let settings = slot_store::read_slot_state(&root);
+    let mut cable = slot::hdmi::CableWatch::new(settings.hdmi_auto);
+    let hdmi = match slot::hdmi::prepare(&settings) {
+        Ok(size) => size,
+        Err(e) => {
+            eprintln!("slot: video output setup: {e}");
+            return false;
+        }
+    };
+    let route = slot::audio::AudioRoute {
+        output: settings.audio_output,
+        docked: hdmi.is_some(),
+    };
+    let open_audio = move || {
+        let mut sink = slot::audio::open_sink();
+        sink.configure_route(route);
+        if let Err(e) = sink.open(slot::audio::GBA_HZ) {
+            eprintln!("slot: audio: {e}");
+        }
+        sink
+    };
+    let audio = std::thread::Builder::new()
+        .name("slot-audio-open".into())
+        .spawn(open_audio);
+    let mut surface = match hdmi.map_or_else(FbdevSurface::new, FbdevSurface::open) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("slot: {e}");
-            return;
+            return false;
         }
     };
     slot::boot_time::mark("surface");
@@ -86,7 +135,7 @@ pub fn run() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("slot: {e}");
-            return;
+            return false;
         }
     };
     slot::boot_time::mark("compositor");
@@ -96,10 +145,12 @@ pub fn run() {
     slot::boot_time::mark("platform");
     let sink = match audio.map(|h| h.join()) {
         Ok(Ok(sink)) => sink,
-        _ => slot::audio::opened_sink(),
+        _ => open_audio(),
     };
     slot::boot_time::mark("audio");
     let mut frontend = Frontend::boot_with(Box::new(platform), sink);
+    let mut docked = hdmi.is_some();
+    frontend.set_docked(docked);
     slot::boot_time::mark("frontend");
     frontend.upload_boot_faces(&mut compositor);
     slot::boot_time::mark("faces");
@@ -124,15 +175,35 @@ pub fn run() {
         }
         if frontend.powering_off() {
             frontend.poweroff();
-            return;
+            return false;
+        }
+        let changed = cable.changed();
+        let active = hdmi.is_some() && cable.present();
+        if active != docked {
+            docked = active;
+            frontend.set_docked(docked);
+        }
+        if changed {
+            match frontend.checkpoint_for_display() {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => {
+                    let wait = cable.defer();
+                    eprintln!(
+                        "slot: HDMI change deferred: {e}; retrying in {} s",
+                        wait.as_secs()
+                    );
+                }
+            }
         }
         frontend.step_emulator(pacer.period, STEP_TIMEOUT);
+        compositor.set_hdmi_scaling(hdmi.map(|_| frontend.hdmi_scaling()));
         frontend.render(&mut compositor, surface.window_size());
         let swap = Instant::now();
         let work = swap - began;
         if let Err(e) = surface.swap() {
             eprintln!("slot: {e}");
-            return;
+            return false;
         }
         let swap_took = swap.elapsed();
         slot::latency::swapped(swap_took.as_secs_f64() * 1000.0);

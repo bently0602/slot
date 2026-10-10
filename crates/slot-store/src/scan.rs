@@ -25,11 +25,12 @@ impl Cart {
                     self.code = code;
                 }
             }
-            _ => {
+            Platform::Gb | Platform::Gbc => {
                 if let Some(title) = crate::gb::title(&self.rom) {
                     self.title = title;
                 }
             }
+            Platform::Psx => self.title = self.stem.clone(),
         }
     }
 }
@@ -101,6 +102,36 @@ pub fn scan(root: &Path) -> Result<Vec<Cart>, StoreError> {
     }
     carts.sort_by(|a, b| {
         (a.platform as u8, sort_key(&a.stem)).cmp(&(b.platform as u8, sort_key(&b.stem)))
+    });
+    // A playlist is the shelf entry; its component discs share its saves and label.
+    let mut discs = std::collections::HashSet::new();
+    for cart in &carts {
+        if cart.platform == Platform::Psx
+            && cart
+                .rom
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
+        {
+            if let Ok(playlist) = std::fs::read_to_string(&cart.rom) {
+                let parent = cart.rom.parent().unwrap_or(Path::new("."));
+                for line in playlist
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                {
+                    if let Ok(path) = parent.join(line).canonicalize() {
+                        discs.insert(path);
+                    }
+                }
+            }
+        }
+    }
+    carts.retain(|c| {
+        c.platform != Platform::Psx
+            || c.rom
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
+            || c.rom.canonicalize().map_or(true, |p| !discs.contains(&p))
     });
     Ok(carts)
 }
