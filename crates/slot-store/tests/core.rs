@@ -201,5 +201,5 @@ fn a_line_naming_a_core_the_platform_cannot_run_is_dropped() {
 #[test]
 fn the_picker_board_has_exactly_two_sockets() {
     assert_eq!(Core::GBA.len(), 2);
-    assert_eq!(Core::ALL.len(), 3);
+    assert_eq!(Core::ALL.len(), 4);
 }

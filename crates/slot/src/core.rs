@@ -160,7 +160,7 @@ pub fn colour_option(which: Core, on: bool) -> Option<(&'static str, &'static st
             "gpsp_color_correction",
             if on { "enabled" } else { "disabled" },
         )),
-        Core::PcsxRearmed => None,
+        Core::PcsxRearmed | Core::Snes9x => None,
     }
 }
 
@@ -181,6 +181,11 @@ pub fn apply_core_options(
     colour: bool,
     palette: Option<GbPalette>,
 ) {
+    if which == Core::Snes9x {
+        core.set_option("snes9x_overclock_superfx", "100%");
+        core.set_option("snes9x_overclock_cycles", "disabled");
+        return;
+    }
     if which == Core::PcsxRearmed {
         core.set_option("pcsx_rearmed_bios", "auto");
         core.set_option("pcsx_rearmed_memcard1", "libretro");

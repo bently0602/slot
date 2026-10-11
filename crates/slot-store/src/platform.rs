@@ -7,10 +7,17 @@ pub enum Platform {
     Gb,
     Gbc,
     Psx,
+    Snes,
 }
 
 impl Platform {
-    pub const ALL: [Platform; 4] = [Platform::Gba, Platform::Gb, Platform::Gbc, Platform::Psx];
+    pub const ALL: [Platform; 5] = [
+        Platform::Gba,
+        Platform::Gb,
+        Platform::Gbc,
+        Platform::Psx,
+        Platform::Snes,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -18,6 +25,7 @@ impl Platform {
             Platform::Gb => "Game Boy",
             Platform::Gbc => "Game Boy Color",
             Platform::Psx => "PlayStation",
+            Platform::Snes => "Super Nintendo",
         }
     }
 
@@ -27,6 +35,7 @@ impl Platform {
             Platform::Gb => "GB",
             Platform::Gbc => "GBC",
             Platform::Psx => "PSX",
+            Platform::Snes => "SNES",
         }
     }
 
@@ -35,6 +44,7 @@ impl Platform {
             Platform::Gba => &["gba"],
             Platform::Gb | Platform::Gbc => &["gb", "gbc"],
             Platform::Psx => &["chd", "cue", "pbp", "iso", "exe", "m3u"],
+            Platform::Snes => &["sfc", "smc", "swc", "fig"],
         }
     }
 
@@ -43,6 +53,8 @@ impl Platform {
             Platform::Gba => (240, 160),
             Platform::Gb | Platform::Gbc => (160, 144),
             Platform::Psx => (640, 480),
+            // A fixed 4:3 canvas also accommodates hi-res and interlaced modes.
+            Platform::Snes => (640, 480),
         }
     }
 
@@ -54,5 +66,9 @@ impl Platform {
                     .iter()
                     .any(|k| ext.eq_ignore_ascii_case(k))
             })
+    }
+
+    pub fn multiplayer(self) -> bool {
+        matches!(self, Platform::Psx | Platform::Snes)
     }
 }

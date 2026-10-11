@@ -8,6 +8,9 @@ license.workspace = true
 [dependencies]
 slot-input = { path = "../slot-input" }
 unicode-normalization.workspace = true
+symphonia.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

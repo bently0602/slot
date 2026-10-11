@@ -11,10 +11,11 @@ pub enum Core {
     Mgba,
     Gpsp,
     PcsxRearmed,
+    Snes9x,
 }
 
 impl Core {
-    pub const ALL: [Core; 3] = [Core::Mgba, Core::Gpsp, Core::PcsxRearmed];
+    pub const ALL: [Core; 4] = [Core::Mgba, Core::Gpsp, Core::PcsxRearmed, Core::Snes9x];
     pub const GBA: [Core; 2] = [Core::Mgba, Core::Gpsp];
 
     pub fn as_str(&self) -> &'static str {
@@ -22,6 +23,7 @@ impl Core {
             Core::Mgba => "mgba",
             Core::Gpsp => "gpsp",
             Core::PcsxRearmed => "pcsx_rearmed",
+            Core::Snes9x => "snes9x",
         }
     }
 
@@ -34,6 +36,7 @@ impl Core {
             Core::Mgba => "mGBA",
             Core::Gpsp => "gpSP",
             Core::PcsxRearmed => "PCSX ReARMed",
+            Core::Snes9x => "Snes9x",
         }
     }
 
@@ -42,15 +45,17 @@ impl Core {
             "mgba" => Some(Core::Mgba),
             "gpsp" => Some(Core::Gpsp),
             "pcsx_rearmed" => Some(Core::PcsxRearmed),
+            "snes9x" => Some(Core::Snes9x),
             _ => None,
         }
     }
 
     pub fn runs(self, platform: Platform) -> bool {
         match self {
-            Core::Mgba => platform != Platform::Psx,
+            Core::Mgba => matches!(platform, Platform::Gba | Platform::Gb | Platform::Gbc),
             Core::Gpsp => platform == Platform::Gba,
             Core::PcsxRearmed => platform == Platform::Psx,
+            Core::Snes9x => platform == Platform::Snes,
         }
     }
 
@@ -58,6 +63,7 @@ impl Core {
         match platform {
             Platform::Gba | Platform::Gb | Platform::Gbc => Core::Mgba,
             Platform::Psx => Core::PcsxRearmed,
+            Platform::Snes => Core::Snes9x,
         }
     }
 }
