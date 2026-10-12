@@ -1,4 +1,4 @@
-use slot_store::{Core, Platform, StateRing, RING_MAX};
+use slot_store::{Core, Platform, StateRing, RING_MAX, SAVE_SLOTS};
 use tempfile::tempdir;
 
 #[test]
@@ -254,4 +254,80 @@ fn a_second_retirement_in_the_same_second_does_not_overwrite_the_first() {
     assert_ne!(first, second, "the second retirement took the same name");
     assert_eq!(std::fs::read(&first).unwrap(), [1u8; 8], "the first went");
     assert_eq!(std::fs::read(&second).unwrap(), [2u8; 8]);
+}
+
+#[test]
+fn four_numbered_slots_survive_reopening_and_overwrite_independently() {
+    let d = tempdir().unwrap();
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+    for slot in 0..SAVE_SLOTS {
+        assert_eq!(r.read_slot(slot).unwrap(), None);
+        r.write_slot(slot, &[slot as u8; 8]).unwrap();
+    }
+    r.write_slot(1, b"replacement").unwrap();
+    let reopened = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+    for slot in 0..SAVE_SLOTS {
+        let expected = if slot == 1 {
+            b"replacement".to_vec()
+        } else {
+            vec![slot as u8; 8]
+        };
+        assert_eq!(reopened.read_slot(slot).unwrap().unwrap(), expected);
+    }
+    assert_eq!(
+        std::fs::read_dir(d.path().join("States/GBA/mgba/Emerald"))
+            .unwrap()
+            .count(),
+        4
+    );
+}
+
+#[test]
+fn manual_slots_are_not_evicted_and_do_not_replace_history_or_resume() {
+    let d = tempdir().unwrap();
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+    r.write_resume(b"resume").unwrap();
+    for slot in 0..SAVE_SLOTS {
+        r.write_slot(slot, &[slot as u8; 8]).unwrap();
+    }
+    for i in 0..RING_MAX + 5 {
+        r.push(&[i as u8], b"png", &format!("2026-08-09_00-00-{i:02}"))
+            .unwrap();
+    }
+    assert_eq!(r.list().unwrap().len(), RING_MAX);
+    for slot in 0..SAVE_SLOTS {
+        assert_eq!(r.read_slot(slot).unwrap().unwrap(), vec![slot as u8; 8]);
+    }
+    assert_eq!(r.read_resume().unwrap().unwrap(), b"resume");
+    r.remove_slot(2).unwrap();
+    assert_eq!(r.read_slot(2).unwrap(), None);
+    assert_eq!(r.list().unwrap().len(), RING_MAX);
+}
+
+#[test]
+fn numbered_slots_refuse_indices_outside_four_and_are_game_platform_core_private() {
+    let d = tempdir().unwrap();
+    let r = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+    for slot in [SAVE_SLOTS, usize::MAX] {
+        assert_eq!(
+            r.write_slot(slot, b"bad").unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert!(r.read_slot(slot).is_err());
+        assert!(r.remove_slot(slot).is_err());
+    }
+    assert!(!d.path().join("States").exists());
+    r.write_slot(0, b"private").unwrap();
+    for (platform, core, cart) in [
+        (Platform::Gba, Core::Gpsp, "Emerald"),
+        (Platform::Gb, Core::Mgba, "Emerald"),
+        (Platform::Gba, Core::Mgba, "Fusion"),
+    ] {
+        assert_eq!(
+            StateRing::new(d.path(), platform, core, cart)
+                .read_slot(0)
+                .unwrap(),
+            None
+        );
+    }
 }

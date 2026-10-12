@@ -150,6 +150,29 @@ fn homebrew_video_memory_card_and_multi_disc_resume() {
         (1, 2),
         "resuming must restore the mounted disc"
     );
+    // Rewind restores frequently, then steps with neutral pads to redraw.
+    // Exercise the actual core, including its disc metadata, repeatedly.
+    let began = std::time::Instant::now();
+    let mut snapshots = Vec::new();
+    for _ in 0..20 {
+        for _ in 0..6 {
+            core.run_frame_pads([ButtonMask(0); 4]);
+            let _ = core.take_audio();
+        }
+        snapshots.push(core.serialize().unwrap());
+    }
+    eprintln!(
+        "PCSX rewind: {} bytes per state; 120 frames + 20 captures in {:?}",
+        snapshots[0].len(),
+        began.elapsed()
+    );
+    for snapshot in snapshots.iter().rev() {
+        core.unserialize(snapshot).unwrap();
+        core.run_frame_pads([ButtonMask(0); 4]);
+        let _ = core.take_audio();
+        assert_eq!(core.discs(), (1, 2));
+        assert!(core.video_xrgb8888().chunks_exact(4).any(|p| p[2] > 200));
+    }
     drop(core);
     let mut core = LibretroCore::open_with(&path, &root, &root).unwrap();
     core.set_video_canvas(640, 480);

@@ -33,7 +33,7 @@ fn settle(shelf: &mut Shelf) {
 }
 
 #[test]
-fn coverflow_centres_the_flat_selection_above_inward_facing_neighbours() {
+fn coverflow_centres_the_flat_selection_above_neighbours_whose_outer_edges_are_nearest() {
     for platform in Platform::ALL {
         let s = shelf(10, platform);
         let out = draw(&s);
@@ -59,8 +59,10 @@ fn coverflow_centres_the_flat_selection_above_inward_facing_neighbours() {
                 panic!("a neighbouring cart should have perspective");
             };
             let offset = x + w / 2.0 - OUT_W as f32 / 2.0;
-            assert!(offset * yaw < 0.0);
-            if tex.is_some() {
+            assert!(offset * yaw > 0.0);
+            assert!(yaw.abs() > 1.0, "side covers stand steeply, as on an iPod");
+            let face = colour[0] == 1.0;
+            if tex.is_some() && face {
                 assert!(colour[3] < 1.0);
             }
         }
@@ -199,4 +201,55 @@ fn a_moving_selection_keeps_its_pose_as_insertion_begins_then_straightens() {
     out.clear();
     chrome.draw_with_yaw(s.selected_yaw(), &mut out);
     assert!(!out.iter().any(|d| matches!(d, Draw::Yawed { .. })));
+}
+
+#[test]
+fn an_angled_cover_shows_a_shaded_side_wall_past_its_outer_edge() {
+    for platform in Platform::ALL {
+        let s = shelf(10, platform);
+        let out = draw(&s);
+        let of = |cart: usize| {
+            out.iter()
+                .filter_map(move |d| match d {
+                    Draw::Yawed {
+                        x, w, tex, colour, ..
+                    } if *tex == Some(TexId::from_raw(cart)) => Some((x + w / 2.0, *colour)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        for (cart, outward) in [(1, 1.0), (9, -1.0)] {
+            let drawn = of(cart);
+            let (face_at, face) = *drawn.last().expect("the neighbour was not drawn");
+            assert_eq!(face[0], 1.0, "the face is painted over its own wall");
+            let wall = &drawn[..drawn.len() - 1];
+            assert!(wall.len() > 1, "the neighbour has no thickness");
+            let mut last = f32::INFINITY;
+            for (at, colour) in wall {
+                let out_by = (at - face_at) * outward;
+                assert!(out_by > 0.0, "the wall is not on the outer side");
+                assert!(out_by < last, "the wall is not painted back to front");
+                assert!(colour[0] < 1.0, "the wall is lit like the face");
+                last = out_by;
+            }
+        }
+        assert!(
+            !out.iter()
+                .any(|d| matches!(d, Draw::Yawed { tex, .. } if *tex == Some(TexId::from_raw(0)))),
+            "the flat selection grew a wall"
+        );
+    }
+}
+
+#[test]
+fn a_wall_fades_with_its_cover_as_the_row_recedes() {
+    let mut s = shelf(10, Platform::Gba);
+    s.right();
+    s.update(1.0 / 60.0);
+    let mut out = Vec::new();
+    s.draw_row(None, 0.0, 0.75, 1.0, &mut out);
+    assert!(out.iter().all(|d| match d {
+        Draw::Yawed { colour, .. } => colour[3] <= 0.26,
+        _ => true,
+    }));
 }

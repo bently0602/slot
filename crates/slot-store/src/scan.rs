@@ -30,7 +30,7 @@ impl Cart {
                     self.title = title;
                 }
             }
-            Platform::Psx => self.title = self.stem.clone(),
+            Platform::Psx | Platform::Snes => self.title = self.stem.clone(),
         }
     }
 }

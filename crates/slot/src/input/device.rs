@@ -11,7 +11,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use slot_input::{
-    Btn, ControllerConfig, ControllerInfo, ControllerStatus, InputSource, Millis, RawEvent,
+    Btn, ControllerConfig, ControllerInfo, ControllerMode, ControllerStatus, InputSource, Millis,
+    RawEvent, PLAYERS,
 };
 
 use super::controller::{AxisRange, Controller};
@@ -35,11 +36,14 @@ struct Shared {
     pending: Vec<RawEvent>,
     config: ControllerConfig,
     status: ControllerStatus,
+    mode: ControllerMode,
+    players: [Vec<Btn>; PLAYERS],
 }
 
 pub struct DeviceInput {
     pending: Arc<Mutex<Shared>>,
     status: ControllerStatus,
+    players: [Vec<Btn>; PLAYERS],
     hall: Option<PathBuf>,
     lid_shut: Option<bool>,
     next_lid_poll: Millis,
@@ -91,6 +95,7 @@ impl DeviceInput {
         DeviceInput {
             pending,
             status: ControllerStatus::default(),
+            players: Default::default(),
             hall: find_hall(Path::new(PSY)),
             lid_shut: None,
             next_lid_poll: 0,
@@ -267,10 +272,11 @@ struct Worker {
     trace: Option<Arc<Trace>>,
 }
 
-fn enqueue(queue: &Mutex<Shared>, events: Vec<RawEvent>, status: ControllerStatus) {
+fn enqueue(queue: &Mutex<Shared>, events: Vec<RawEvent>, hub: &ControllerHub) {
     let mut shared = queue.lock().unwrap_or_else(|e| e.into_inner());
     shared.pending.extend(events);
-    shared.status = status;
+    shared.status = hub.status();
+    shared.players = hub.players();
 }
 
 impl Worker {
@@ -318,7 +324,7 @@ impl Worker {
                 };
                 let changes = self.hub.connect(self.next_id, info);
                 let events = self.external_events(changes);
-                enqueue(queue, events, self.hub.status());
+                enqueue(queue, events, &self.hub);
             }
             eprintln!(
                 "slot: input connected {} ({}, {})",
@@ -345,7 +351,7 @@ impl Worker {
             } else {
                 self.mux.set(node.id, held)
             };
-            enqueue(queue, events, self.hub.status());
+            enqueue(queue, events, &self.hub);
             self.nodes.push(node);
         }
     }
@@ -359,7 +365,7 @@ impl Worker {
         } else {
             self.mux.set(node.id, Vec::new())
         };
-        enqueue(queue, events, self.hub.status());
+        enqueue(queue, events, &self.hub);
     }
 
     fn external_events(&mut self, changes: Vec<RawEvent>) -> Vec<RawEvent> {
@@ -373,15 +379,19 @@ impl Worker {
         let mut scan_at = Instant::now() + Duration::from_millis(500);
         let mut buffer = [0u8; EVENT_BYTES * 32];
         while !stopped.load(Ordering::Relaxed) {
-            let config = queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .config
-                .clone();
+            let (config, mode) = {
+                let shared = queue.lock().unwrap_or_else(|e| e.into_inner());
+                (shared.config.clone(), shared.mode)
+            };
+            let changes = self.hub.set_mode(mode);
+            if !changes.is_empty() {
+                let events = self.external_events(changes);
+                enqueue(queue, events, &self.hub);
+            }
             if config != self.config {
                 let changes = self.hub.configure(&config);
                 let events = self.external_events(changes);
-                enqueue(queue, events, self.hub.status());
+                enqueue(queue, events, &self.hub);
                 self.config = config;
                 for node in &mut self.nodes {
                     if node.controller.is_some() {
@@ -391,7 +401,7 @@ impl Worker {
                             .into_iter()
                             .flat_map(|e| self.mux.feed(EXTERNAL, e))
                             .collect();
-                        enqueue(queue, events, self.hub.status());
+                        enqueue(queue, events, &self.hub);
                     }
                 }
             }
@@ -469,7 +479,7 @@ impl Worker {
                             } else {
                                 self.mux.set(node.id, held)
                             };
-                            enqueue(queue, events, self.hub.status());
+                            enqueue(queue, events, &self.hub);
                         }
                         continue;
                     }
@@ -480,10 +490,14 @@ impl Worker {
                         (node.id, changes)
                     };
                     for event in changes {
+                        if source != EXTERNAL && self.hub.builtin(event) {
+                            enqueue(queue, Vec::new(), &self.hub);
+                            continue;
+                        }
                         if matches!(event, RawEvent::Down(_)) {
                             crate::latency::read();
                         }
-                        enqueue(queue, self.mux.feed(source, event), self.hub.status());
+                        enqueue(queue, self.mux.feed(source, event), &self.hub);
                     }
                 }
             }
@@ -557,10 +571,19 @@ impl InputSource for DeviceInput {
         self.status.clone()
     }
 
+    fn set_controller_mode(&mut self, mode: ControllerMode) {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).mode = mode;
+    }
+
+    fn player_buttons(&self) -> [Vec<Btn>; PLAYERS] {
+        self.players.clone()
+    }
+
     fn poll(&mut self, now: Millis) -> Vec<RawEvent> {
         let mut shared = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = std::mem::take(&mut shared.pending);
         self.status = shared.status.clone();
+        self.players.clone_from(&shared.players);
         drop(shared);
         if self.hall.is_some() && now >= self.next_lid_poll {
             self.next_lid_poll = now + LID_POLL_MS;

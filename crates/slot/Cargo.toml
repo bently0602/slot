@@ -23,6 +23,10 @@ gilrs = { workspace = true, optional = true }
 libloading = { workspace = true }
 lz4_flex = { workspace = true }
 png = { workspace = true }
+symphonia.workspace = true
+image.workspace = true
+rubato.workspace = true
+realfft.workspace = true
 
 [dev-dependencies]
 slot-gfx = { path = "../slot-gfx", default-features = false, features = ["test-support"] }

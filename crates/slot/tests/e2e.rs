@@ -131,16 +131,27 @@ fn the_whole_pass_from_boot_to_resume() {
         "the polaroid has no picture"
     );
 
-    p.event(RawEvent::Down(Btn::R2));
+    p.tap(Btn::Menu);
+    for _ in 0..5 {
+        p.tap(Btn::Down);
+    }
+    p.event(RawEvent::Down(Btn::A));
     p.expect_running();
-    p.event(RawEvent::Up(Btn::R2));
-    p.event(RawEvent::Down(Btn::L2));
+    p.event(RawEvent::Up(Btn::A));
+    assert_eq!(p.session.app().state_menu_row(), Some(5));
+    p.tap(Btn::Up);
+    p.event(RawEvent::Down(Btn::A));
     for _ in 0..10 {
         p.step();
         std::thread::sleep(Duration::from_millis(2));
     }
-    p.event(RawEvent::Up(Btn::L2));
+    p.event(RawEvent::Up(Btn::A));
+    assert_eq!(p.session.app().state_menu_row(), Some(4));
+    p.tap(Btn::B);
     p.expect_running();
+
+    // The next Menu tap starts a new gesture, outside the double-tap window.
+    p.now += 400;
 
     p.tap(Btn::Menu);
     p.event(RawEvent::Down(Btn::Menu));

@@ -27,6 +27,10 @@ impl Pad {
         ButtonMask(self.mask)
     }
 
+    pub fn holding(buttons: &[Btn]) -> ButtonMask {
+        ButtonMask(buttons.iter().filter_map(|b| bit(*b)).fold(0, |m, b| m | b))
+    }
+
     pub fn clear(&mut self) {
         self.mask = 0;
     }

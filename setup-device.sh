@@ -9,9 +9,11 @@ for option in "$@"; do
 Usage: bash setup-device.sh
 
 Install missing prerequisites and build the RG SP/BaseOS SD2 bundle in ./dist-device.
-Safe to rerun: builds are cached and existing games, BIOS, saves and settings are kept.
+Builds are cached; dist-device is cleaned after each successful build.
+Keep games, BIOS, saves and settings on your SD card, outside dist-device.
 On x86_64, start Docker Desktop with Linux containers and WSL integration first,
 or provide a working Linux Docker daemon with ARM64 emulation.
+Docker is also required on native ARM64 for the bundled Go/SDL Device Info app.
 This script prepares files; it does not copy to a device or reflash an SD card.
 HELP
       exit 0
@@ -34,9 +36,9 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$repo_dir"
 [[ -f taskfile.yml && -f rust-toolchain.toml ]] || fail 'Keep setup-device.sh in the root of the Slot repository.'
 
+command -v docker >/dev/null || fail 'Docker is missing. Device Info needs Docker on all build hosts. On Windows, install Docker Desktop, select Linux containers and enable Settings > Resources > WSL Integration for Ubuntu, then rerun this script.'
+docker info >/dev/null 2>&1 || fail 'Docker is not ready. Start Docker Desktop and enable WSL integration for this Ubuntu distro, or start your Linux Docker daemon, then rerun this script.'
 if "$use_docker"; then
-  command -v docker >/dev/null || fail 'Docker is missing. On Windows, install Docker Desktop, select Linux containers and enable Settings > Resources > WSL Integration for Ubuntu, then rerun this script.'
-  docker info >/dev/null 2>&1 || fail 'Docker is not ready. Start Docker Desktop and enable WSL integration for this Ubuntu distro, or start your Linux Docker daemon, then rerun this script.'
   export DOCKER_DEFAULT_PLATFORM=linux/arm64
 fi
 
@@ -109,16 +111,18 @@ else
   fi
 fi
 
-# Task recreates OUT, so use a generated staging folder and merge only after success.
+# Task recreates OUT, so build in staging and clean dist-device only after success.
 # Keep this path relative and fixed: Task interpolates it into shell commands.
 staging=target/device-bundle
-printf 'Building the device app and mGBA, gpSP and PlayStation cores...\n'
+printf 'Building the device app and mGBA, gpSP, PlayStation and SNES cores...\n'
 task dist:device "OUT=$staging"
-for binary in slot mgba_libretro.so gpsp_libretro.so pcsx_rearmed_libretro.so; do
+for binary in slot mgba_libretro.so gpsp_libretro.so pcsx_rearmed_libretro.so snes9x_libretro.so; do
   [[ -f "$staging/System/$binary" ]] || fail "Build did not produce System/$binary."
   binary_info="$(file "$staging/System/$binary")"
   [[ $binary_info == *aarch64* ]] || fail "Build produced a non-ARM64 binary: $binary_info"
 done
+printf 'Cleaning dist-device and copying the new bundle...\n'
+rm -rf -- dist-device
 mkdir -p dist-device
 cp -R "$staging/." dist-device/
 
@@ -130,6 +134,10 @@ Device setup is ready at $repo_dir/dist-device
 2. Merge dist-device/System/ into SD2's System/ folder, replacing software files.
    Keep Games, BIOS, Config, Saves and States. Leave BaseOS on SD1 in place.
 3. Safely eject the card, put it back and start Slot.
+
+Music: put MP3/FLAC files in Games/Music/Artist/Album on SD2.
+Each folder is an album. Add cover.jpg, cover.jpeg or cover.png if desired.
+Use the Music shelf and Menu > Music for playback, visualizers and rescan.
 
 For docking tests, use Menu > Video Out: Output = Auto,
 Keep Awake Docked = On, and Audio Output = Auto.

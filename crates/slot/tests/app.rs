@@ -339,11 +339,15 @@ fn the_shoulders_ring_over_the_shelves() {
         "R1 did not reach the Game Boy shelf"
     );
     tap(&mut a, Btn::R1);
+    assert_eq!(a.shelf_kind, slot::app::ShelfKind::Music);
+    tap(&mut a, Btn::R1);
     assert_eq!(
         a.selected_stem(),
         Some("Emerald"),
         "the ring did not come back round"
     );
+    tap(&mut a, Btn::L1);
+    assert_eq!(a.shelf_kind, slot::app::ShelfKind::Music);
     tap(&mut a, Btn::L1);
     assert_eq!(
         a.selected_stem(),
@@ -368,11 +372,15 @@ fn a_colour_cart_stands_on_a_shelf_of_its_own() {
         "the Colour cart shares the Game Boy shelf"
     );
     tap(&mut a, Btn::R1);
+    assert_eq!(a.shelf_kind, slot::app::ShelfKind::Music);
+    tap(&mut a, Btn::R1);
     assert_eq!(
         a.selected_stem(),
         Some("Emerald"),
-        "three shelves did not ring back round to the first"
+        "four shelves did not ring back round to the first"
     );
+    tap(&mut a, Btn::L1);
+    assert_eq!(a.shelf_kind, slot::app::ShelfKind::Music);
     tap(&mut a, Btn::L1);
     assert_eq!(a.selected_stem(), Some("Chromatic"));
 }
@@ -444,14 +452,19 @@ fn a_shelf_comes_back_settled_where_it_was_left() {
 }
 
 #[test]
-fn the_shoulders_do_nothing_when_there_is_one_shelf_to_be_on() {
+fn a_single_console_switches_to_music_and_remembers_its_selected_cart() {
     let mut a = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gba, "Fusion")]);
     for btn in [Btn::L1, Btn::R1] {
         tap(&mut a, btn);
+        let wanted = if btn == Btn::L1 {
+            None
+        } else {
+            Some("Emerald")
+        };
         assert_eq!(
             a.selected_stem(),
-            Some("Emerald"),
-            "{btn:?} moved a shelf with no neighbour"
+            wanted,
+            "{btn:?} lost the console selection or exposed it on Music"
         );
         assert_eq!(
             a.toast(),
@@ -481,7 +494,9 @@ fn the_switch_changes_the_name_on_the_band_and_says_nothing() {
     for (btn, want) in [
         (Btn::R1, "Game Boy"),
         (Btn::R1, "Game Boy Color"),
+        (Btn::R1, "Music"),
         (Btn::R1, "Game Boy Advance"),
+        (Btn::L1, "Music"),
         (Btn::L1, "Game Boy Color"),
     ] {
         a.apply_at(Action::GbaDown(btn), 1_000);
@@ -501,19 +516,19 @@ fn the_switch_changes_the_name_on_the_band_and_says_nothing() {
 }
 
 #[test]
-fn a_card_on_one_shelf_names_nothing_because_there_is_nowhere_to_switch_to() {
+fn a_single_console_and_the_music_shelf_are_both_named() {
     let mut alone = app_with_platforms(&[(Platform::Gba, "Emerald"), (Platform::Gba, "Fusion")]);
     assert_eq!(
         alone.shelf_platform_name(),
-        None,
-        "a card with only Game Boy Advance carts named its platform anyway"
+        Some("Game Boy Advance"),
+        "the console alongside Music was not named"
     );
-    for btn in [Btn::L1, Btn::R1] {
+    for (btn, name) in [(Btn::L1, "Music"), (Btn::R1, "Game Boy Advance")] {
         alone.apply_at(Action::GbaDown(btn), 1_000);
         assert_eq!(
             alone.shelf_platform_name(),
-            None,
-            "{btn:?} named a shelf on a card that has one"
+            Some(name),
+            "{btn:?} left the wrong shelf name"
         );
     }
 
@@ -1855,6 +1870,7 @@ fn a_shoulder_held_across_the_insert_does_not_stick_on_the_pad() {
     common::clocked(d.path());
     let mut s = Session::boot(d.path().to_path_buf());
     s.feed([RawEvent::Down(Btn::L1)], 16);
+    s.feed([RawEvent::Down(Btn::R1), RawEvent::Up(Btn::R1)], 24);
     s.feed([RawEvent::Down(Btn::A)], 32);
     s.feed([RawEvent::Up(Btn::A)], 48);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1888,6 +1904,7 @@ fn a_shoulder_still_held_when_the_cart_seats_never_reaches_a_game_boy_core() {
         common::clocked(root.path());
         let mut s = Session::boot(root.path().to_path_buf());
         s.feed([RawEvent::Down(Btn::L1)], 16);
+        s.feed([RawEvent::Down(Btn::R1), RawEvent::Up(Btn::R1)], 24);
         s.feed([RawEvent::Down(Btn::A)], 32);
         s.feed([RawEvent::Up(Btn::A)], 48);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1935,6 +1952,14 @@ fn the_picture_mode_is_remembered_per_cart() {
     s.feed([RawEvent::Down(Btn::R1)], 100);
     assert_eq!(video_mode_for(d.path(), "Tetris"), VideoMode::Actual);
     assert_eq!(s.app().source_rect(), WHOLE_TEXTURE);
+}
+
+#[test]
+fn a_cart_comes_back_with_the_run_ahead_it_was_left_with() {
+    let d = common::tmp_root_with_gb_carts(&["Tetris", "Zzz"]);
+    slot::run_ahead::write_run_ahead(d.path(), "Tetris", 2).expect("write run_ahead.txt");
+    let s = session_playing(d.path());
+    assert_eq!(s.app().run_ahead(), 2);
 }
 
 #[test]
@@ -2023,19 +2048,16 @@ fn a_chorded_select_never_reaches_the_pad() {
 }
 
 #[test]
-fn a_latched_fast_forward_does_not_outlive_the_cart() {
+fn menu_fast_forward_does_not_outlive_the_cart() {
     let d = common::tmp_root_with_carts(&["Emerald", "Zzz"]);
     let mut s = session_playing(d.path());
-    s.feed([RawEvent::Down(Btn::R2)], 1000);
-    s.feed([RawEvent::Up(Btn::R2)], 1050);
-    s.feed([RawEvent::Down(Btn::R2)], 1150);
-    s.feed([RawEvent::Up(Btn::R2)], 1200);
+    s.app_mut().apply(Action::QuickMenu);
+    for _ in 0..5 {
+        s.app_mut().apply(Action::GbaDown(Btn::Down));
+    }
+    s.feed([RawEvent::Down(Btn::A)], 1200);
     let mut now = run(&mut s, 1200, 2);
-    assert_eq!(
-        s.app().ff_badge(),
-        Some(Icon::FastForwardLatched),
-        "the latch never took"
-    );
+    assert_eq!(s.app().ff_badge(), Some(Icon::FastForward));
     let deadline = Instant::now() + Duration::from_secs(10);
     while s.emu().map(EmuHandle::observed_speed) != Some(Speed::Fast) {
         assert!(Instant::now() < deadline, "the worker never ran fast");
@@ -2064,12 +2086,12 @@ fn a_latched_fast_forward_does_not_outlive_the_cart() {
     assert_eq!(
         s.app().ff_badge(),
         None,
-        "the next cart came up with the last cart's latch still showing"
+        "the next cart came up with the last cart's playback still showing"
     );
     assert_ne!(
         s.emu().map(EmuHandle::observed_speed),
         Some(Speed::Fast),
-        "the next cart came up fast forwarding off a latch the last one was left holding"
+        "the next cart came up fast forwarding from the last cart"
     );
 }
 
@@ -2144,9 +2166,9 @@ fn a_letter_jump_shows_the_letter_in_the_slot_and_fades_like_the_shelf_name() {
     let mut a = app_with_carts(&["Alpha", "Bravo"]);
     let face = slot_ui::TexId::from_raw(77);
     assert_eq!(
-        a.slot_text(),
-        None,
-        "a one shelf card printed something in the slot"
+        a.slot_text().as_deref(),
+        Some("Game Boy Advance"),
+        "the console shelf alongside Music was not named"
     );
 
     a.apply(Action::GbaDown(Btn::Down));

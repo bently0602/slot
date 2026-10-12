@@ -16,6 +16,7 @@ struct Slot {
     frontend: Frontend,
     input: HostInput,
     hdmi_preview: bool,
+    device_info: Option<std::path::PathBuf>,
 }
 
 impl Slot {
@@ -28,6 +29,7 @@ impl Slot {
             frontend,
             input: HostInput::new(),
             hdmi_preview,
+            device_info: None,
         }
     }
 }
@@ -75,6 +77,11 @@ impl ApplicationHandler for Slot {
                 }
                 surface.request_redraw();
                 self.frontend.advance(&mut self.input);
+                if let Some(root) = self.frontend.take_device_info_request() {
+                    self.device_info = Some(root);
+                    events.exit();
+                    return;
+                }
                 if self.frontend.restarting() {
                     self.frontend.restart();
                 }
@@ -101,7 +108,13 @@ pub fn run() {
         }
     };
     events.set_control_flow(ControlFlow::Poll);
-    if let Err(e) = events.run_app(&mut Slot::new()) {
+    let mut app = Slot::new();
+    if let Err(e) = events.run_app(&mut app) {
         eprintln!("slot: {e}");
+    }
+    let device_info = app.device_info.take();
+    drop(app);
+    if let Some(root) = device_info {
+        slot::system_app::device_info(&root);
     }
 }

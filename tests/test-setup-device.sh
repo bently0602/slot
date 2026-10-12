@@ -48,7 +48,7 @@ case "$1" in
     for directory in System Games BIOS Config Saves States; do
       mkdir -p "target/device-bundle/$directory"
     done
-    for binary in slot mgba_libretro.so gpsp_libretro.so pcsx_rearmed_libretro.so; do
+    for binary in slot mgba_libretro.so gpsp_libretro.so pcsx_rearmed_libretro.so snes9x_libretro.so; do
       echo "new software" > "target/device-bundle/System/$binary"
     done
     ;;
@@ -79,15 +79,20 @@ chmod +x "$fixture/bin/"*
 cd "$fixture/repo with spaces"
 for directory in Games BIOS Config Saves States; do
   mkdir -p "dist-device/$directory"
-  echo "keep $directory" > "dist-device/$directory/user-content"
+  echo "old $directory" > "dist-device/$directory/user-content"
 done
 mkdir -p dist-device/System
 echo 'old software' > dist-device/System/slot
+echo 'obsolete software' > dist-device/System/obsolete.so
+echo 'stale hidden file' > dist-device/.stale
 DOCKER_DEFAULT_PLATFORM=linux/amd64 bash setup-device.sh > "$fixture/first.log"
+[[ ! -e dist-device/System/obsolete.so && ! -e dist-device/.stale ]]
+echo 'obsolete software from previous run' > dist-device/System/obsolete.so
 bash setup-device.sh > "$fixture/second.log"
 for directory in Games BIOS Config Saves States; do
-  [[ $(cat "dist-device/$directory/user-content") == "keep $directory" ]]
+  [[ -d "dist-device/$directory" && ! -e "dist-device/$directory/user-content" ]]
 done
+[[ ! -e dist-device/System/obsolete.so ]]
 [[ $(cat dist-device/System/slot) == 'new software' ]]
 grep -Fq 'task platform=linux/arm64 dist:device OUT=target/device-bundle' "$SETUP_TEST_LOG"
 grep -Fq -- '--platform linux/arm64 rust:1-bullseye uname -m' "$SETUP_TEST_LOG"
@@ -129,15 +134,15 @@ bash setup-device.sh > "$fixture/reuse.log"
 [[ $(cat dist-device/System/slot) == 'new software' ]]
 
 # Native ARM64 installs the pinned Rust toolchain and missing build packages,
-# without touching Docker; restore the valid host Task for this fixture.
+# with Docker checked for Device Info; restore the valid host Task for this fixture.
 cp "$fixture/release/task" "$fixture/bin/task"
 printf '[toolchain]\nchannel = "1.96"\n' > rust-toolchain.toml
 docker_count="$(grep -c '^docker ' "$SETUP_TEST_LOG")"
 env CARGO_HOME="$fixture/empty-cargo" SETUP_TEST_HOST_ARCH=aarch64 \
   SETUP_TEST_MISSING_PACKAGE=cmake SETUP_TEST_INSTALL_RUST=1 \
   bash setup-device.sh > "$fixture/native.log"
-[[ $(grep -c '^docker ' "$SETUP_TEST_LOG") == "$docker_count" ]]
+[[ $(grep -c '^docker ' "$SETUP_TEST_LOG") == "$((docker_count + 1))" ]]
 grep -Fxq 'apt update' "$SETUP_TEST_LOG"
 grep -Fxq 'apt install -y --no-install-recommends cmake' "$SETUP_TEST_LOG"
 grep -Fxq 'rustup toolchain install 1.96 --profile minimal --component rustfmt --component clippy' "$SETUP_TEST_LOG"
-echo 'setup-device smoke tests passed (reruns, preservation, ARM64 checks, failures, Task checksum/install/cache, native prerequisites).'
+echo 'setup-device smoke tests passed (reruns, output cleanup, ARM64 checks, failure preservation, Task checksum/install/cache, native prerequisites).'

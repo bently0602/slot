@@ -91,6 +91,7 @@ pub struct RewindThread {
 enum Msg {
     Push(Vec<u8>),
     Pop(std::sync::mpsc::SyncSender<Option<Vec<u8>>>),
+    Clear(std::sync::mpsc::SyncSender<()>),
 }
 
 impl RewindThread {
@@ -113,6 +114,11 @@ impl RewindThread {
                             published.store(rewind.fill(), std::sync::atomic::Ordering::Relaxed);
                             let _ = reply.send(out);
                         }
+                        Msg::Clear(reply) => {
+                            rewind = Rewind::new(budget_bytes);
+                            published.store(0, std::sync::atomic::Ordering::Relaxed);
+                            let _ = reply.send(());
+                        }
                     }
                 }
             })
@@ -124,12 +130,25 @@ impl RewindThread {
         let _ = self.tx.send(Msg::Push(state));
     }
 
+    /// Large states may outpace compression. Skip a capture rather than stall play.
+    pub fn try_push(&self, state: Vec<u8>) {
+        let _ = self.tx.try_send(Msg::Push(state));
+    }
+
     pub fn pop(&self) -> Option<Vec<u8>> {
         let (tx, rx) = std::sync::mpsc::sync_channel(0);
         if self.tx.send(Msg::Pop(tx)).is_err() {
             return None;
         }
         rx.recv().ok().flatten()
+    }
+
+    /// Wait for queued captures to be discarded before starting a new timeline.
+    pub fn clear(&self) {
+        let (tx, rx) = std::sync::mpsc::sync_channel(0);
+        if self.tx.send(Msg::Clear(tx)).is_ok() {
+            let _ = rx.recv();
+        }
     }
 
     pub fn fill(&self) -> u8 {

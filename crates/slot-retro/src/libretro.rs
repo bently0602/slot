@@ -28,7 +28,7 @@ struct Host {
     disk: Option<DiskControl>,
     format: PixelFormat,
     audio: Vec<i16>,
-    inputs: [u16; 2],
+    inputs: [u16; 4],
     system_dir: CString,
     save_dir: CString,
     rumble: Rumble,
@@ -439,6 +439,7 @@ pub struct LibretroCore {
     rom_path: Option<CString>,
     av: AvInfo,
     loaded: bool,
+    state_size: usize,
     _lib: Library,
 }
 
@@ -523,7 +524,7 @@ impl LibretroCore {
             disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
-            inputs: [0; 2],
+            inputs: [0; 4],
             system_dir: cdir(system_dir)?,
             save_dir: cdir(save_dir)?,
             rumble: Rumble::default(),
@@ -556,6 +557,7 @@ impl LibretroCore {
                 sample_rate: 0.0,
             },
             loaded: false,
+            state_size: 0,
             _lib: lib,
         })
     }
@@ -573,6 +575,7 @@ impl LibretroCore {
         let _a = Active::bind(&mut self.host);
         unsafe { (self.api.unload_game)() };
         self.loaded = false;
+        self.state_size = 0;
     }
 
     fn memory(&self, id: c_uint) -> Option<&[u8]> {
@@ -646,6 +649,10 @@ impl RetroCore for LibretroCore {
     fn set_option(&mut self, key: &str, value: &str) {
         LibretroCore::set_option(self, key, value);
     }
+    fn set_controller_port_device(&mut self, port: u32, device: u32) {
+        let _a = Active::bind(&mut self.host);
+        unsafe { (self.api.set_controller_port_device)(port, device) };
+    }
 
     fn load(&mut self, rom: &Path) -> Result<(), CoreError> {
         self.unload();
@@ -715,7 +722,14 @@ impl RetroCore for LibretroCore {
             fps: av.timing.fps,
             sample_rate: av.timing.sample_rate,
         };
-        unsafe { (self.api.set_controller_port_device)(0, DEVICE_JOYPAD) };
+        self.set_controller_port_device(0, DEVICE_JOYPAD);
+        if self.full_joypad() {
+            // PCSX ReARMed leaves every port empty until it is told otherwise. Ports two
+            // and three are a multitap's, and are read only while one is plugged in.
+            for port in 1..4 {
+                self.set_controller_port_device(port, DEVICE_JOYPAD);
+            }
+        }
         Ok(())
     }
 
@@ -727,7 +741,14 @@ impl RetroCore for LibretroCore {
         if !self.loaded {
             return;
         }
-        self.host.inputs = [p1.0, p2.0];
+        self.run_frame_pads([p1, p2, ButtonMask(0), ButtonMask(0)]);
+    }
+
+    fn run_frame_pads(&mut self, pads: [ButtonMask; 4]) {
+        if !self.loaded {
+            return;
+        }
+        self.host.inputs = pads.map(|pad| pad.0);
         let _a = Active::bind(&mut self.host);
         unsafe { (self.api.run)() };
     }
@@ -765,6 +786,34 @@ impl RetroCore for LibretroCore {
         } else {
             Err(CoreError::State("serialize refused".into()))
         }
+    }
+
+    // Asking a core for its state size can cost as much as saving: mGBA saves a whole state
+    // to measure it. The size is asked for once and again only when the core refuses it.
+    fn serialize_into(&mut self, state: &mut Vec<u8>) -> Result<(), CoreError> {
+        for asked_again in [false, true] {
+            if self.state_size == 0 || asked_again {
+                self.state_size = unsafe { (self.api.serialize_size)() };
+            }
+            if self.state_size == 0 {
+                return Err(CoreError::State("core reports no state".into()));
+            }
+            // Not cleared first: a state is megabytes on some cores, and the core fills it.
+            state.resize(self.state_size, 0);
+            let ok = {
+                let _a = Active::bind(&mut self.host);
+                unsafe { (self.api.serialize)(state.as_mut_ptr() as *mut c_void, state.len()) }
+            };
+            if ok {
+                let (disc, count) = self.discs();
+                if count > 1 {
+                    state.extend_from_slice(b"SLOTPSX1");
+                    state.extend_from_slice(&(disc as u32).to_le_bytes());
+                }
+                return Ok(());
+            }
+        }
+        Err(CoreError::State("serialize refused".into()))
     }
 
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
@@ -855,7 +904,7 @@ mod tests {
             disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
-            inputs: [0; 2],
+            inputs: [0; 4],
             system_dir: CString::new(".").unwrap(),
             save_dir: CString::new(".").unwrap(),
             rumble: Rumble::default(),
@@ -1702,7 +1751,7 @@ mod tests {
     #[test]
     fn input_state_answers_each_port_from_its_own_mask() {
         let mut host = host_with(HashMap::new(), false);
-        host.inputs = [ButtonMask::A, ButtonMask::B | ButtonMask::START];
+        host.inputs = [ButtonMask::A, ButtonMask::B | ButtonMask::START, 0, 0];
         let _active = Active::bind(&mut host);
 
         let mask = |port| unsafe { input_state(port, DEVICE_JOYPAD, 0, JOYPAD_MASK) } as u16;
@@ -1713,7 +1762,7 @@ mod tests {
     #[test]
     fn input_state_answers_single_buttons_on_port_1() {
         let mut host = host_with(HashMap::new(), false);
-        host.inputs = [0, ButtonMask::B];
+        host.inputs = [0, ButtonMask::B, 0, 0];
         let _active = Active::bind(&mut host);
 
         let button = |id| unsafe { input_state(1, DEVICE_JOYPAD, 0, id) };
@@ -1722,12 +1771,12 @@ mod tests {
     }
 
     #[test]
-    fn input_state_answers_nothing_past_port_1() {
+    fn input_state_answers_nothing_past_the_fourth_port() {
         let mut host = host_with(HashMap::new(), false);
-        host.inputs = [u16::MAX, u16::MAX];
+        host.inputs = [u16::MAX; 4];
         let _active = Active::bind(&mut host);
 
-        assert_eq!(unsafe { input_state(2, DEVICE_JOYPAD, 0, JOYPAD_MASK) }, 0);
+        assert_eq!(unsafe { input_state(4, DEVICE_JOYPAD, 0, JOYPAD_MASK) }, 0);
     }
 
     #[test]

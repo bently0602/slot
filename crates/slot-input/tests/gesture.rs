@@ -5,6 +5,19 @@ use slot_input::{
 };
 
 #[test]
+fn psx_triggers_and_menu_keep_their_ordinary_actions() {
+    let mut g = Gestures::new();
+    for button in [L2, R2] {
+        assert_eq!(g.feed_psx(Down(button), 0), vec![GbaDown(button)]);
+        assert_eq!(g.feed_psx(Up(button), 10), vec![GbaUp(button)]);
+    }
+    assert!(g.feed_psx(Down(Menu), 100).is_empty());
+    assert_eq!(g.feed_psx(Up(Menu), 200), vec![QuickMenu]);
+    assert!(g.feed_psx(Down(Menu), 1000).is_empty());
+    assert_eq!(g.tick(1000 + MENU_HOLD_MS), vec![Eject]);
+}
+
+#[test]
 fn a_select_that_becomes_a_chord_never_reaches_the_game() {
     let mut g = Gestures::new();
     assert!(g.feed(Down(Select), 0).is_empty());
@@ -165,24 +178,6 @@ fn menu_hold_released_early_ejects_nothing() {
 }
 
 #[test]
-fn r2_hold_is_momentary() {
-    let mut g = Gestures::new();
-    assert_eq!(g.feed(Down(R2), 0), vec![FfStart]);
-    assert_eq!(g.feed(Up(R2), 900), vec![FfStop]);
-}
-
-#[test]
-fn r2_double_tap_latches_and_single_press_clears() {
-    let mut g = Gestures::new();
-    g.feed(Down(R2), 0);
-    g.feed(Up(R2), 50);
-    g.feed(Down(R2), 100);
-    assert!(g.feed(Up(R2), 150).is_empty());
-    g.feed(Down(R2), 5000);
-    assert_eq!(g.feed(Up(R2), 5050), vec![FfStop]);
-}
-
-#[test]
 fn power_flushes_on_the_press_and_locks_on_the_release() {
     let mut g = Gestures::new();
     assert_eq!(g.feed(Down(Btn::Power), 0), vec![PowerPress]);
@@ -205,35 +200,6 @@ fn a_press_just_short_of_the_threshold_is_a_lock() {
     g.feed(Down(Btn::Power), 0);
     assert!(g.tick(POWER_HOLD_MS - 1).is_empty());
     assert_eq!(g.feed(Up(Btn::Power), POWER_HOLD_MS - 1), vec![PowerTap]);
-}
-
-#[test]
-fn a_press_the_rewind_turned_away_is_not_half_of_a_latch() {
-    let mut g = Gestures::new();
-    assert_eq!(g.feed(Down(L2), 0), vec![RewindStart]);
-    assert!(
-        g.feed(Down(R2), 50).is_empty(),
-        "the rewind let a fast forward start under it"
-    );
-    assert!(g.feed(Up(R2), 100).is_empty());
-    assert_eq!(g.feed(Up(L2), 150), vec![RewindStop]);
-    assert_eq!(g.feed(Down(R2), 200), vec![FfStart]);
-    assert!(!g.ff_latched(), "a single press latched fast forward");
-    assert_eq!(
-        g.feed(Up(R2), 400),
-        vec![FfStop],
-        "the finger came off R2 and the speed stayed"
-    );
-}
-
-#[test]
-fn rewind_beats_latched_fast_forward() {
-    let mut g = Gestures::new();
-    g.feed(Down(R2), 0);
-    g.feed(Up(R2), 50);
-    g.feed(Down(R2), 100);
-    g.feed(Up(R2), 150);
-    assert_eq!(g.feed(Down(L2), 200), vec![FfStop, RewindStart]);
 }
 
 #[test]
@@ -482,10 +448,10 @@ fn select_and_l2_or_r2_steps_the_palette_without_rewinding_or_fast_forwarding() 
 }
 
 #[test]
-fn l2_and_r2_on_their_own_still_rewind_and_fast_forward() {
+fn triggers_are_game_buttons_without_playback_shortcuts() {
     let mut g = Gestures::new();
-    assert_eq!(g.feed(Down(L2), 0), vec![RewindStart]);
-    assert_eq!(g.feed(Up(L2), 40), vec![RewindStop]);
+    assert_eq!(g.feed(Down(L2), 0), vec![GbaDown(L2)]);
+    assert_eq!(g.feed(Up(L2), 40), vec![GbaUp(L2)]);
     assert!(!g.feed(Down(R2), 60).contains(&PaletteNext));
     assert!(!g.feed(Up(R2), 90).contains(&PaletteNext));
 }
@@ -515,4 +481,26 @@ fn x_under_select_reaches_the_game() {
     let mut g = Gestures::new();
     assert!(g.feed(Down(Select), 0).is_empty());
     assert_eq!(g.feed(Down(X), 10), vec![GbaDown(Select), GbaDown(X)]);
+}
+
+#[test]
+fn menu_plus_a_trigger_does_not_start_playback() {
+    for psx in [false, true] {
+        let mut g = Gestures::new();
+        let feed = |g: &mut Gestures, event, at| {
+            if psx {
+                g.feed_psx(event, at)
+            } else {
+                g.feed(event, at)
+            }
+        };
+        assert!(feed(&mut g, Down(Menu), 0).is_empty());
+        assert_eq!(feed(&mut g, Down(L2), 10), vec![GbaDown(L2)]);
+        assert_eq!(feed(&mut g, Up(L2), 20), vec![GbaUp(L2)]);
+        assert_eq!(feed(&mut g, Up(Menu), 30), vec![QuickMenu]);
+        for at in [100, 200, 300] {
+            assert_eq!(feed(&mut g, Down(R2), at), vec![GbaDown(R2)]);
+            assert_eq!(feed(&mut g, Up(R2), at + 10), vec![GbaUp(R2)]);
+        }
+    }
 }

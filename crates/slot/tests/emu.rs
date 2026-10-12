@@ -1089,3 +1089,166 @@ fn waiting_on_an_unlocked_worker_does_not_block() {
         "the wait blocked"
     );
 }
+
+#[test]
+fn run_ahead_shows_a_later_frame_and_leaves_the_game_where_it_was() {
+    for ahead in [0u8, 1, 2] {
+        let emu = spawn();
+        emu.set_run_ahead(ahead);
+        std::thread::sleep(Duration::from_millis(200));
+        let (frames, _) = held_counts(&emu);
+        let shown = emu.latest_frame().expect("nothing was published")[2];
+        assert_eq!(
+            shown,
+            (frames + u64::from(ahead)) as u8,
+            "asking for {ahead}, the game is on frame {frames}"
+        );
+    }
+}
+
+#[test]
+fn run_ahead_does_not_speed_the_game_up() {
+    let emu = spawn();
+    let from = frame_count(&emu);
+    std::thread::sleep(Duration::from_millis(300));
+    let normal = frame_count(&emu) - from;
+
+    emu.set_run_ahead(2);
+    let from = frame_count(&emu);
+    std::thread::sleep(Duration::from_millis(300));
+    let ahead = frame_count(&emu) - from;
+    assert!(
+        ahead * 4 >= normal * 3 && ahead * 3 <= normal * 4,
+        "{ahead} frames running ahead against {normal} without"
+    );
+}
+
+#[test]
+fn run_ahead_is_capped_at_two_frames() {
+    let emu = spawn();
+    emu.set_run_ahead(9);
+    std::thread::sleep(Duration::from_millis(200));
+    let (frames, _) = held_counts(&emu);
+    let shown = emu.latest_frame().expect("nothing was published")[2];
+    assert_eq!(shown, (frames + 2) as u8);
+}
+
+#[test]
+fn run_ahead_stands_down_while_fast_forwarding() {
+    let emu = spawn();
+    emu.set_run_ahead(2);
+    emu.set_speed(Speed::Fast);
+    std::thread::sleep(Duration::from_millis(200));
+    let (frames, _) = held_counts(&emu);
+    let shown = emu.latest_frame().expect("nothing was published")[2];
+    assert_eq!(shown, frames as u8);
+}
+
+#[test]
+fn rewinding_still_walks_backwards_with_run_ahead_on() {
+    let emu = spawn();
+    emu.set_run_ahead(2);
+    std::thread::sleep(Duration::from_millis(300));
+    let played = frame_count(&emu);
+
+    emu.set_rewinding(true);
+    std::thread::sleep(Duration::from_millis(200));
+    emu.set_rewinding(false);
+    let rewound = frame_count(&emu);
+    assert!(
+        rewound < played,
+        "the core did not rewind: {played} then {rewound}"
+    );
+}
+
+struct TwoPorts {
+    inner: MockCore,
+    full: bool,
+    seen: Arc<Mutex<Vec<(u16, u16)>>>,
+}
+
+impl RetroCore for TwoPorts {
+    fn full_joypad(&self) -> bool {
+        self.full
+    }
+    fn load(&mut self, rom: &Path) -> Result<(), CoreError> {
+        self.inner.load(rom)
+    }
+    fn run_frame(&mut self, input: ButtonMask) {
+        self.seen.lock().unwrap().push((input.0, 0));
+        self.inner.run_frame(input);
+    }
+    fn run_frame_linked(&mut self, p1: ButtonMask, p2: ButtonMask) {
+        self.seen.lock().unwrap().push((p1.0, p2.0));
+        self.inner.run_frame(p1);
+    }
+    fn video_xrgb8888(&self) -> &[u8] {
+        self.inner.video_xrgb8888()
+    }
+    fn take_audio(&mut self) -> Vec<i16> {
+        self.inner.take_audio()
+    }
+    fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
+        self.inner.serialize()
+    }
+    fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        self.inner.unserialize(data)
+    }
+    fn save_ram(&self) -> Option<Vec<u8>> {
+        self.inner.save_ram()
+    }
+    fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        self.inner.load_save_ram(data)
+    }
+    fn av_info(&self) -> AvInfo {
+        self.inner.av_info()
+    }
+}
+
+fn two_ports(full: bool, ahead: u8) -> Vec<(u16, u16)> {
+    let mut sink = StubSink::new();
+    sink.open(32_768).expect("the stub refused to open");
+    drain(sink.clone());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let core = TwoPorts {
+        inner: MockCore::new(),
+        full,
+        seen: seen.clone(),
+    };
+    let emu = EmuHandle::spawn(
+        Box::new(core),
+        PathBuf::from("mock"),
+        sink.ring(),
+        None,
+        None,
+    );
+    emu.set_run_ahead(ahead);
+    emu.set_input(ButtonMask(ButtonMask::A));
+    emu.set_other_inputs([ButtonMask(ButtonMask::B), ButtonMask(0), ButtonMask(0)]);
+    emu.set_speed(Speed::Normal);
+    assert!(wait_for(|| seen.lock().unwrap().len() > 12));
+    drop(emu);
+    let seen = seen.lock().unwrap().clone();
+    seen
+}
+
+#[test]
+fn a_core_with_two_ports_is_given_both_players_buttons() {
+    for ahead in [0, 2] {
+        let seen = two_ports(true, ahead);
+        assert!(
+            seen.iter()
+                .all(|pair| *pair == (ButtonMask::A, ButtonMask::B)),
+            "running {ahead} ahead, a frame missed a player: {seen:?}"
+        );
+    }
+}
+
+#[test]
+fn a_handheld_core_never_sees_a_second_player() {
+    let seen = two_ports(false, 0);
+    assert!(
+        seen.iter().all(|(_, second)| *second == 0),
+        "a single-player core was handed player two: {seen:?}"
+    );
+}

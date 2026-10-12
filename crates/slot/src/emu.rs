@@ -17,6 +17,7 @@ use crate::link_state;
 use crate::persist::Snapshot;
 use crate::resample::Resampler;
 use crate::rewind::{RewindThread, REWIND_BYTES};
+use crate::run_ahead::RUN_AHEAD_MAX;
 
 const PRESENT: Duration = Duration::from_nanos(16_666_667);
 
@@ -81,6 +82,7 @@ enum Cmd {
     EndLink,
     BeginCable(u8, Box<dyn LinkChannel>),
     SetOption(String, String),
+    ControllerPort(u32, u32),
 }
 
 struct Shared {
@@ -88,12 +90,14 @@ struct Shared {
     disc_count: AtomicU32,
     disc_failed: AtomicBool,
     input: AtomicU16,
+    other_inputs: [AtomicU16; 3],
     speed: AtomicU8,
     observed: AtomicU8,
     state: AtomicU8,
     rewind: AtomicBool,
     rewind_fill: AtomicU8,
     turbo: AtomicBool,
+    run_ahead: AtomicU8,
     recording: AtomicBool,
     stop: AtomicBool,
     volume: AtomicU8,
@@ -170,12 +174,14 @@ impl EmuHandle {
             disc_count: AtomicU32::new(0),
             disc_failed: AtomicBool::new(false),
             input: AtomicU16::new(0),
+            other_inputs: Default::default(),
             speed: AtomicU8::new(Speed::Paused as u8),
             observed: AtomicU8::new(Speed::Paused as u8),
             state: AtomicU8::new(CoreState::Loading as u8),
             rewind: AtomicBool::new(false),
             rewind_fill: AtomicU8::new(0),
             turbo: AtomicBool::new(true),
+            run_ahead: AtomicU8::new(0),
             recording: AtomicBool::new(true),
             stop: AtomicBool::new(false),
             volume: AtomicU8::new(100),
@@ -270,6 +276,10 @@ impl EmuHandle {
         );
     }
 
+    pub fn set_controller_port_device(&self, port: u32, device: u32) {
+        request(&self.cmds, &self.shared, Cmd::ControllerPort(port, device));
+    }
+
     pub fn set_driven(&self, driven: bool) {
         self.shared.driven.store(driven, Ordering::Relaxed);
         self.shared.clocked.notify_all();
@@ -311,6 +321,13 @@ impl EmuHandle {
     pub fn set_input(&self, mask: ButtonMask) {
         let before = self.shared.input.swap(mask.0, Ordering::Relaxed);
         crate::latency::applied(before, mask.0);
+    }
+
+    /// Players two, three and four.
+    pub fn set_other_inputs(&self, masks: [ButtonMask; 3]) {
+        for (slot, mask) in self.shared.other_inputs.iter().zip(masks) {
+            slot.store(mask.0, Ordering::Relaxed);
+        }
     }
 
     pub fn input(&self) -> ButtonMask {
@@ -373,6 +390,12 @@ impl EmuHandle {
 
     pub fn set_turbo(&self, on: bool) {
         self.shared.turbo.store(on, Ordering::Relaxed);
+    }
+
+    pub fn set_run_ahead(&self, frames: u8) {
+        self.shared
+            .run_ahead
+            .store(frames.min(RUN_AHEAD_MAX), Ordering::Relaxed);
     }
 
     pub fn set_rewind_recording(&self, on: bool) {
@@ -487,6 +510,16 @@ impl Worker {
         }
     }
 
+    fn pad(&self, input: ButtonMask, full_joypad: bool, frame: u32) -> ButtonMask {
+        if full_joypad {
+            return input;
+        }
+        match self.shared.turbo.load(Ordering::Relaxed) {
+            true => input.turbo(frame),
+            false => input.without_turbo(),
+        }
+    }
+
     fn for_card(&self, state: Vec<u8>) -> Vec<u8> {
         self.player
             .and_then(|p| link_state::local(&state, p))
@@ -547,6 +580,17 @@ impl Worker {
         let mut out = Vec::new();
         let mut gated = (false, false);
         let rewind = RewindThread::spawn(REWIND_BYTES);
+        // PS1 states are much larger. Capture at 10 Hz and replay at 20 Hz,
+        // leaving the handheld cores' existing 30/60 Hz behavior intact.
+        let snapshot_every = if core.full_joypad() {
+            6
+        } else {
+            SNAPSHOT_EVERY
+        };
+        let rewind_every = snapshot_every / 2;
+        let mut rewind_tick = 0u32;
+        let mut recording = self.shared.recording.load(Ordering::Relaxed);
+        let mut capture_refused = false;
         let mut since_snapshot = 0;
         let mut cost = FrameCost::seed();
         let mut post_cost = PRESENT - FAST_TARGET;
@@ -559,6 +603,8 @@ impl Worker {
         let mut rate = TickRate::new(Instant::now(), 0);
         let mut stalled = false;
         let mut turbo_frame = 0u32;
+        let mut ahead_refused = false;
+        let mut ahead_state = Vec::new();
         let mut frame_credit = 0.0;
         let mut transport: Option<Box<dyn LinkChannel>> = None;
         let mut cable: Option<Cable> = None;
@@ -570,7 +616,14 @@ impl Worker {
         let mut ff = (0u32, 0u32, Duration::ZERO, Instant::now());
         while !self.shared.stop.load(Ordering::Relaxed) {
             for cmd in self.cmds.try_iter() {
-                self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+                self.apply(
+                    cmd,
+                    core.as_mut(),
+                    &mut transport,
+                    &mut cable,
+                    &link,
+                    &rewind,
+                );
             }
 
             if let Some(t) = transport.as_mut() {
@@ -615,6 +668,23 @@ impl Worker {
             self.shared.observed.store(speed as u8, Ordering::Release);
             let ff_sound = self.shared.ff_sound.load(Ordering::Relaxed);
             let rewinding = speed != Speed::Paused && self.shared.rewind.load(Ordering::Relaxed);
+            let wants_recording = self.shared.recording.load(Ordering::Relaxed);
+            if recording != wants_recording {
+                rewind.clear();
+                self.shared.rewind_fill.store(0, Ordering::Relaxed);
+                since_snapshot = 0;
+                capture_refused = false;
+                recording = wants_recording;
+            }
+            if !rewinding {
+                rewind_tick = 0;
+                if speed == Speed::Normal && transport.is_none() && recording && core.full_joypad()
+                {
+                    since_snapshot += 1;
+                } else if speed != Speed::Normal || transport.is_some() || !recording {
+                    since_snapshot = 0;
+                }
+            }
             let gate = (
                 speed == Speed::Fast && !ff_sound,
                 speed == Speed::Paused || rewinding,
@@ -635,12 +705,17 @@ impl Worker {
                 self.shared.clocked.notify_all();
             }
             let input = ButtonMask(self.shared.input.load(Ordering::Relaxed));
+            let others = self
+                .shared
+                .other_inputs
+                .each_ref()
+                .map(|mask| ButtonMask(mask.load(Ordering::Relaxed)));
             crate::latency::emu_frame(input.0);
             let mut span = 1u32;
             let ceiling = match speed {
                 Speed::Paused => 0,
                 Speed::Normal if lock && !ticked => 0,
-                Speed::Normal if core.full_joypad() => {
+                Speed::Normal if core.full_joypad() && !rewinding => {
                     frame_credit += av.fps * PRESENT.as_secs_f64();
                     let frames = frame_credit.floor() as u32;
                     frame_credit -= frames as f64;
@@ -650,14 +725,23 @@ impl Worker {
                 Speed::Fast => self.shared.fast_steps.load(Ordering::Relaxed),
             };
             if rewinding {
-                if let Some(state) = rewind.pop() {
-                    if let Err(e) = core.unserialize(&state) {
-                        eprintln!("slot: rewind: {e}");
+                if rewind_tick.is_multiple_of(rewind_every) {
+                    if let Some(state) = rewind.pop() {
+                        match core.unserialize(&state) {
+                            Ok(()) => {
+                                core.set_frame_skip(false);
+                                core.run_frame_pads([ButtonMask(0); 4]);
+                                self.publish(core.video_xrgb8888());
+                            }
+                            Err(e) => {
+                                eprintln!("slot: rewind: {e}, clearing history");
+                                rewind.clear();
+                            }
+                        }
                     }
-                    core.set_frame_skip(false);
-                    core.run_frame(ButtonMask(0));
-                    self.publish(core.video_xrgb8888());
                 }
+                rewind_tick = rewind_tick.wrapping_add(1);
+                since_snapshot = 0;
                 self.shared
                     .rewind_fill
                     .store(rewind.fill(), Ordering::Relaxed);
@@ -669,22 +753,24 @@ impl Worker {
                 }
                 let ceiling = ceiling * span;
                 let budget = one + PRESENT * (span - 1);
+                let ahead = if speed == Speed::Normal
+                    && transport.is_none()
+                    && self.player.is_none()
+                    && !ahead_refused
+                {
+                    u32::from(self.shared.run_ahead.load(Ordering::Relaxed))
+                } else {
+                    0
+                };
                 let began = Instant::now();
                 let mut ran = 0u32;
                 let (mut skipped, mut drawn) = (None::<Duration>, Duration::ZERO);
                 loop {
                     ran += 1;
                     let last = ran >= ceiling || cost.last(began.elapsed(), budget);
-                    let input = if core.full_joypad() {
-                        input
-                    } else {
-                        match self.shared.turbo.load(Ordering::Relaxed) {
-                            true => input.turbo(turbo_frame),
-                            false => input.without_turbo(),
-                        }
-                    };
+                    let input = self.pad(input, core.full_joypad(), turbo_frame);
                     turbo_frame = turbo_frame.wrapping_add(1);
-                    core.set_frame_skip(!last);
+                    core.set_frame_skip(!last || ahead > 0);
                     let frame_began = Instant::now();
                     match cable.as_mut() {
                         Some(c) => {
@@ -724,16 +810,60 @@ impl Worker {
                                 }
                             }
                         }
+                        None if core.full_joypad() => {
+                            core.run_frame_pads([input, others[0], others[1], others[2]])
+                        }
                         None => core.run_frame(input),
                     }
                     let took = frame_began.elapsed();
-                    if last {
+                    if last && ahead == 0 {
                         drawn = took;
                     } else {
                         skipped = Some(skipped.map_or(took, |w| w.max(took)));
                     }
                     if last {
                         break;
+                    }
+                }
+                // Run ahead: the frames above are the real ones and were not drawn. Show the
+                // picture a few frames on with the same buttons held, then put the core back.
+                let (mut real_audio, mut ran_ahead) = (None, false);
+                if ahead > 0 {
+                    real_audio = Some(core.take_audio());
+                    match core.serialize_into(&mut ahead_state) {
+                        Ok(()) => {
+                            for n in 0..ahead {
+                                let input = self.pad(
+                                    input,
+                                    core.full_joypad(),
+                                    turbo_frame.wrapping_add(n),
+                                );
+                                core.set_frame_skip(n + 1 < ahead);
+                                let frame_began = Instant::now();
+                                match core.full_joypad() {
+                                    true => core
+                                        .run_frame_pads([input, others[0], others[1], others[2]]),
+                                    false => core.run_frame(input),
+                                }
+                                let took = frame_began.elapsed();
+                                if n + 1 < ahead {
+                                    skipped = Some(skipped.map_or(took, |w| w.max(took)));
+                                } else {
+                                    drawn = took;
+                                }
+                            }
+                            self.publish(core.video_xrgb8888());
+                            let _ = core.take_audio();
+                            if let Err(e) = core.unserialize(&ahead_state) {
+                                eprintln!("slot: run ahead: {e}, turning it off");
+                                ahead_refused = true;
+                            }
+                            ran_ahead = true;
+                        }
+                        Err(e) => {
+                            eprintln!("slot: run ahead: {e}, turning it off");
+                            ahead_refused = true;
+                        }
                     }
                 }
                 let core_time = began.elapsed();
@@ -778,27 +908,40 @@ impl Worker {
                     }
                 }
                 flush_outbound(&mut transport, &link);
-                self.publish(core.video_xrgb8888());
+                if !ran_ahead {
+                    self.publish(core.video_xrgb8888());
+                }
                 self.frame_done(served);
 
-                since_snapshot += 1;
-                if cable.is_some()
-                    || speed == Speed::Fast
-                    || !self.shared.recording.load(Ordering::Relaxed)
+                if !core.full_joypad() && speed == Speed::Normal && transport.is_none() && recording
                 {
-                    since_snapshot = 0;
+                    since_snapshot += 1;
                 }
-                if since_snapshot >= SNAPSHOT_EVERY {
+                if since_snapshot >= snapshot_every && !capture_refused {
                     since_snapshot = 0;
-                    if let Ok(state) = core.serialize() {
-                        rewind.push(state);
-                        self.shared
-                            .rewind_fill
-                            .store(rewind.fill(), Ordering::Relaxed);
+                    let state = match ran_ahead {
+                        true => Ok(ahead_state.clone()),
+                        false => core.serialize(),
+                    };
+                    match state {
+                        Ok(state) => {
+                            if core.full_joypad() {
+                                rewind.try_push(state);
+                            } else {
+                                rewind.push(state);
+                            }
+                            self.shared
+                                .rewind_fill
+                                .store(rewind.fill(), Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            eprintln!("slot: rewind: {e}, stopping capture");
+                            capture_refused = true;
+                        }
                     }
                 }
 
-                let audio = core.take_audio();
+                let audio = real_audio.unwrap_or_else(|| core.take_audio());
                 if speed == Speed::Normal || ff_sound {
                     let target = drc_target(ring.capacity_frames());
                     let queued = ring.queued_frames();
@@ -844,7 +987,14 @@ impl Worker {
                         }
                         Wait::Request => {
                             for cmd in self.cmds.try_iter() {
-                                self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+                                self.apply(
+                                    cmd,
+                                    core.as_mut(),
+                                    &mut transport,
+                                    &mut cable,
+                                    &link,
+                                    &rewind,
+                                );
                             }
                             continue;
                         }
@@ -867,7 +1017,14 @@ impl Worker {
             }
         }
         for cmd in self.cmds.try_iter() {
-            self.apply(cmd, core.as_mut(), &mut transport, &mut cable, &link);
+            self.apply(
+                cmd,
+                core.as_mut(),
+                &mut transport,
+                &mut cable,
+                &link,
+                &rewind,
+            );
         }
         ring.set_muted(false);
         ring.set_idle(false);
@@ -884,8 +1041,19 @@ impl Worker {
         transport: &mut Option<Box<dyn LinkChannel>>,
         cable: &mut Option<Cable>,
         link: &Link,
+        rewind: &RewindThread,
     ) {
+        // Restoring a state can also change the disc. Never replay snapshots
+        // from before a load, a disc request, or a link session.
+        if matches!(
+            cmd,
+            Cmd::Disc(_) | Cmd::Load(_) | Cmd::BeginLink(..) | Cmd::BeginCable(..) | Cmd::EndLink
+        ) {
+            rewind.clear();
+            self.shared.rewind_fill.store(0, Ordering::Relaxed);
+        }
         match cmd {
+            Cmd::ControllerPort(port, device) => core.set_controller_port_device(port, device),
             Cmd::Disc(index) => {
                 let failed = match core.change_disc(index) {
                     Ok(()) => false,

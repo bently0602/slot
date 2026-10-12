@@ -23,10 +23,13 @@ pub enum Toast {
     ShaderDot,
     ShaderSimpletex,
     Palette(GbPalette),
+    BatteryLow,
+    BatterySaved,
+    BatterySaveFailed,
 }
 
 impl Toast {
-    const FIXED: [Toast; 14] = [
+    const FIXED: [Toast; 17] = [
         Toast::StateSaved,
         Toast::StateLoaded,
         Toast::NeedsGpsp,
@@ -41,6 +44,9 @@ impl Toast {
         Toast::ShaderGrid,
         Toast::ShaderDot,
         Toast::ShaderSimpletex,
+        Toast::BatteryLow,
+        Toast::BatterySaved,
+        Toast::BatterySaveFailed,
     ];
 
     pub fn all() -> Vec<Toast> {
@@ -59,6 +65,9 @@ impl Toast {
 
     pub fn text(self) -> &'static str {
         match self {
+            Toast::BatteryLow => "Battery Low: 10% or Less",
+            Toast::BatterySaved => "Battery Low: Game Saved",
+            Toast::BatterySaveFailed => "Battery Low: Save Failed",
             Toast::StateSaved => "State Saved",
             Toast::StateLoaded => "State Loaded",
             Toast::NeedsGpsp => "Please switch to gpSP",

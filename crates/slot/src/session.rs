@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use slot_input::{Action, Btn, ControllerStatus, Gestures, Millis, RawEvent};
-use slot_retro::Rumble;
+use slot_input::{
+    Action, Btn, ControllerMode, ControllerStatus, Gestures, Millis, RawEvent, PLAYERS,
+};
+use slot_retro::{ButtonMask, Rumble};
 use slot_store::Platform;
 use slot_ui::FfState;
 
 pub const RUMBLE_MIN_MS: Millis = 100;
 
-use crate::app::{App, Phase};
+use crate::app::{App, Phase, Playback};
 use crate::audio::{opened_sink, AudioSink, Ring, Sfx};
 use crate::core::open_core;
 use crate::emu::{CoreState, EmuHandle, Speed};
@@ -23,8 +25,6 @@ pub struct Session {
     sink: Box<dyn AudioSink>,
     gestures: Gestures,
     pad: Pad,
-    rewinding: bool,
-    fast: bool,
     motor: u16,
     pulse: Option<(Millis, u16)>,
     reloading: bool,
@@ -32,6 +32,19 @@ pub struct Session {
     docked: bool,
     controller_paused: bool,
     handheld_override: bool,
+    multitap: Option<bool>,
+    seats: [ButtonMask; PLAYERS],
+    music: crate::music::Player,
+    music_scan: Option<std::sync::mpsc::Receiver<Vec<slot_store::Album>>>,
+    music_restored: bool,
+    music_display: Option<bool>,
+    music_sleep_playing: bool,
+    music_sleeping: bool,
+    music_audio: bool,
+    music_volume: Option<u8>,
+    music_visible: bool,
+    music_headphones: bool,
+    music_bluetooth: bool,
 }
 
 impl Session {
@@ -40,15 +53,28 @@ impl Session {
     }
 
     pub fn boot_with(root: PathBuf, sink: Box<dyn AudioSink>) -> Self {
+        let music = crate::music::Player::spawn(root.clone(), sink.ring());
+        let mut app = App::boot(&root);
+        app.music.settings = music.snapshot().settings;
+        app.music.scanning = true;
         Session {
-            app: App::boot(&root),
+            music,
+            music_scan: Some(Self::scan_music(root.clone())),
+            music_restored: false,
+            music_display: None,
+            music_sleep_playing: false,
+            music_sleeping: false,
+            music_audio: false,
+            music_volume: None,
+            music_visible: false,
+            music_headphones: app.headphones_active(),
+            music_bluetooth: false,
+            app,
             root,
             emu: None,
             sink,
             gestures: Gestures::new(),
             pad: Pad::default(),
-            rewinding: false,
-            fast: false,
             motor: 0,
             pulse: None,
             reloading: false,
@@ -56,6 +82,8 @@ impl Session {
             docked: false,
             controller_paused: false,
             handheld_override: false,
+            multitap: None,
+            seats: Default::default(),
         }
     }
 
@@ -104,8 +132,7 @@ impl Session {
         self.sync_audio_route();
         if self.dozing() {
             self.pad.clear();
-            self.fast = false;
-            self.rewinding = false;
+            self.app.stop_playback();
             self.sync_pad();
             self.rumble(0);
         }
@@ -118,6 +145,66 @@ impl Session {
 
     pub fn controller_paused(&self) -> bool {
         self.controller_paused
+    }
+
+    /// Where the external controllers' buttons should go this frame.
+    pub fn controller_mode(&self) -> ControllerMode {
+        if self.app.choosing_players() {
+            ControllerMode::Assign
+        } else if self.playing() && !self.app.game_menu_open() {
+            ControllerMode::Game
+        } else {
+            ControllerMode::Menu
+        }
+    }
+
+    /// The buttons of the players who hold a controller of their own.
+    pub fn set_player_buttons(&mut self, held: &[Vec<Btn>; PLAYERS]) {
+        self.seats = held.each_ref().map(|buttons| Pad::holding(buttons));
+        self.send_pads();
+        let Some(emu) = &self.emu else {
+            return;
+        };
+        let tap = self.app.platform().multiplayer() && self.app.multitap_wanted();
+        if self.multitap != Some(tap) {
+            self.multitap = Some(tap);
+            match self.app.platform() {
+                Platform::Psx => emu.set_option(
+                    "pcsx_rearmed_multitap",
+                    if tap { "port 1" } else { "disabled" },
+                ),
+                // SNES multitaps plug into the second console port. Snes9x reads
+                // players 2–5 from consecutive libretro input ports; we expose four.
+                Platform::Snes => emu.set_controller_port_device(1, if tap { 257 } else { 1 }),
+                _ => {}
+            }
+        }
+    }
+
+    /// Hands the core every player's buttons. The handheld, and any controller seated
+    /// with it, plays the handheld's player. A system with one set of controls gives
+    /// them to everybody.
+    fn send_pads(&self) {
+        let Some(emu) = &self.emu else {
+            return;
+        };
+        if self.app.game_menu_open() {
+            emu.set_input(ButtonMask(0));
+            emu.set_other_inputs([ButtonMask(0); 3]);
+            return;
+        }
+        let mut pads = self.seats;
+        if self.app.platform().multiplayer() {
+            let own = usize::from(self.app.handheld_player()) - 1;
+            pads[own] = ButtonMask(pads[own].0 | self.pad.mask().0);
+        } else {
+            let all = pads
+                .iter()
+                .fold(self.pad.mask().0, |held, pad| held | pad.0);
+            pads = [ButtonMask(all), ButtonMask(0), ButtonMask(0), ButtonMask(0)];
+        }
+        emu.set_input(pads[0]);
+        emu.set_other_inputs([pads[1], pads[2], pads[3]]);
     }
 
     pub fn update_controllers(&mut self, status: ControllerStatus) {
@@ -142,8 +229,7 @@ impl Session {
             self.controller_paused = paused;
             self.gestures = Gestures::new();
             self.pad.clear();
-            self.rewinding = false;
-            self.fast = false;
+            self.app.stop_playback();
             self.rumble(0);
             self.sync_pad();
             self.sync_speed();
@@ -162,6 +248,8 @@ impl Session {
     }
 
     pub fn checkpoint_for_display(&mut self) -> std::io::Result<bool> {
+        self.music.sync(crate::music::Command::Checkpoint);
+        self.app.music.snapshot = self.music.snapshot();
         if self
             .emu
             .as_ref()
@@ -243,17 +331,8 @@ impl Session {
                 .seated_cart()
                 .is_some_and(|c| c.platform == Platform::Psx)
             {
-                match ev {
-                    RawEvent::Down(b @ (Btn::L2 | Btn::R2)) => {
-                        actions.push(Action::GbaDown(b));
-                        continue;
-                    }
-                    RawEvent::Up(b @ (Btn::L2 | Btn::R2)) => {
-                        actions.push(Action::GbaUp(b));
-                        continue;
-                    }
-                    _ => {}
-                }
+                actions.extend(self.gestures.feed_psx(ev, now));
+                continue;
             }
             actions.extend(self.gestures.feed(ev, now));
         }
@@ -268,9 +347,7 @@ impl Session {
         for btn in self.app.taken_buttons() {
             self.pad.apply(Action::GbaUp(*btn));
         }
-        if let Some(emu) = &self.emu {
-            emu.set_input(self.pad.mask());
-        }
+        self.send_pads();
     }
 
     fn bridge_link(&mut self, f: impl FnOnce(&mut App)) {
@@ -287,15 +364,9 @@ impl Session {
         if trace() {
             eprintln!("slot: {action:?} in {:?}", self.app.phase());
         }
-        match action {
-            Action::RewindStart => self.rewinding = true,
-            Action::RewindStop => self.rewinding = false,
-            Action::FfStart => self.fast = true,
-            Action::FfStop => self.fast = false,
-            _ => {}
-        }
         let menu = self.overlaid();
         self.bridge_link(|app| app.apply(action));
+        self.sync_music();
         if matches!(
             action,
             Action::VolumeUp | Action::VolumeDown | Action::MuteToggle
@@ -320,6 +391,7 @@ impl Session {
     pub fn update(&mut self, dt: f32) {
         self.bridge_link(|app| app.update(dt));
         self.sync_audio_route();
+        self.sync_music();
         if let Some(emu) = &self.emu {
             emu.set_volume(self.app.output_volume());
         }
@@ -369,11 +441,6 @@ impl Session {
         } else {
             self.app.set_discs((0, 0, false));
         }
-        if !self.has_core() {
-            for action in self.gestures.drop_ff_latch() {
-                self.act(action);
-            }
-        }
         self.app
             .set_game_ready(self.emu.as_ref().is_some_and(EmuHandle::has_published));
         self.sync_speed();
@@ -411,10 +478,9 @@ impl Session {
     }
 
     fn sync_ff_hud(&mut self) {
-        let ff = match (self.actually_fast_forwarding(), self.gestures.ff_latched()) {
-            (false, _) => FfState::Off,
-            (true, false) => FfState::Held,
-            (true, true) => FfState::Latched,
+        let ff = match self.actually_fast_forwarding() {
+            false => FfState::Off,
+            true => FfState::Held,
         };
         self.app.set_ff(ff);
     }
@@ -431,11 +497,13 @@ impl Session {
     }
 
     fn actually_rewinding(&self) -> bool {
-        self.rewinding && self.playing() && self.app.may_rewind()
+        self.app.playback() == Some(Playback::Rewind) && self.playing() && self.app.may_rewind()
     }
 
     fn actually_fast_forwarding(&self) -> bool {
-        self.fast && self.playing() && self.app.may_fast_forward()
+        self.app.playback() == Some(Playback::FastForward)
+            && self.playing()
+            && self.app.may_fast_forward()
     }
 
     fn inserting(&self) -> bool {
@@ -447,7 +515,10 @@ impl Session {
     }
 
     fn overlaid(&self) -> bool {
-        self.showing_polaroids() || self.held() || self.controller_paused
+        self.showing_polaroids()
+            || self.held()
+            || self.app.game_menu_open()
+            || self.controller_paused
     }
 
     fn playing(&self) -> bool {
@@ -455,7 +526,9 @@ impl Session {
     }
 
     fn held(&self) -> bool {
-        self.app.power_menu().is_some() || self.app.game_menu_open() || self.app.shutting_down()
+        self.app.power_menu().is_some()
+            || (self.app.game_menu_open() && self.app.playback().is_none())
+            || self.app.shutting_down()
     }
 
     fn dozing(&self) -> bool {
@@ -487,6 +560,7 @@ impl Session {
             );
             emu.set_rewinding(self.actually_rewinding());
             emu.set_turbo(self.app.turbo());
+            emu.set_run_ahead(self.app.run_ahead());
             emu.set_rewind_recording(self.app.records_rewind());
         }
     }
@@ -495,9 +569,15 @@ impl Session {
         self.sink.configure_route(crate::audio::AudioRoute {
             output: self.app.audio_output(),
             docked: self.docked,
+            bluetooth: self.app.bluetooth.active,
         });
         self.app
             .set_hdmi_audio(self.docked && self.sink.hdmi_active());
+        self.app.set_bluetooth_audio(
+            self.app.bluetooth.active.is_some()
+                && self.app.audio_output() == slot_store::AudioOutput::Auto
+                && self.sink.bluetooth_active(),
+        );
     }
 
     fn no_core() -> bool {
@@ -510,6 +590,13 @@ impl Session {
         }
         let stem = match self.app.phase() {
             Phase::Shelf => {
+                if self.emu.is_some() {
+                    // Trigger releases may arrive after returning to the shelf.
+                    // Start the next cart with fresh shortcut/chord state.
+                    self.gestures = Gestures::new();
+                    self.app.stop_playback();
+                    self.pad.clear();
+                }
                 self.emu = None;
                 return;
             }
@@ -537,6 +624,188 @@ impl Session {
         }
     }
 
+    fn scan_music(root: PathBuf) -> std::sync::mpsc::Receiver<Vec<slot_store::Album>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("slot-music-scan".into())
+            .spawn(move || {
+                let _ = tx.send(slot_store::music::scan(&root));
+            })
+            .expect("music scanner");
+        rx
+    }
+
+    pub fn music_display_resume(&mut self, playing: bool) {
+        if self.app.prepare_music_display() {
+            self.music_display = Some(playing);
+        }
+    }
+
+    fn prepare_music_audio(&mut self) -> bool {
+        if self.music_audio {
+            return true;
+        }
+        self.music.sync(crate::music::Command::Pause);
+        match self.sink.open(crate::music::MUSIC_HZ) {
+            Ok(()) => {
+                self.sink.ring().clear();
+                self.music_audio = true;
+                self.sync_audio_route();
+                true
+            }
+            Err(e) => {
+                self.music.sync(crate::music::Command::Error(e.to_string()));
+                false
+            }
+        }
+    }
+
+    fn sync_music(&mut self) {
+        use crate::music::Command;
+        if let Some(albums) = self.music_scan.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.music_scan = None;
+            if self.app.carts().next().is_none() && matches!(self.app.phase(), Phase::Shelf) {
+                self.app.shelf_kind = crate::app::ShelfKind::Music;
+            }
+            self.app.music.replace(albums);
+            if !self.music_restored {
+                self.music_restored = true;
+                let settings = self.music.snapshot().settings;
+                let resume = settings.resume.as_ref().and_then(|r| {
+                    self.app
+                        .music
+                        .albums
+                        .iter()
+                        .find(|a| a.path == r.album)
+                        .and_then(|a| {
+                            a.tracks
+                                .iter()
+                                .position(|t| t.path == r.track)
+                                .map(|i| (a.clone(), i, r.position))
+                        })
+                });
+                if let Some((album, index, position)) = resume {
+                    let display_playing = self.music_display == Some(true);
+                    let playing = display_playing && self.app.music_display_can_resume();
+                    if !playing || self.prepare_music_audio() {
+                        self.music.sync(Command::Play {
+                            album,
+                            index,
+                            position,
+                            playing,
+                        });
+                    }
+                    self.app.music.snapshot = self.music.snapshot();
+                    if self.music_display.is_some()
+                        && matches!(self.app.phase(), Phase::Shelf)
+                        && self.app.music.show_playing()
+                    {
+                        self.app.shelf_kind = crate::app::ShelfKind::Music;
+                    }
+                } else if settings.resume.is_some() {
+                    self.music.sync(Command::Forget);
+                }
+                self.music_display = None;
+            } else {
+                let snapshot = self.music.snapshot();
+                if snapshot.album.as_ref().is_some_and(|a| {
+                    !self.app.music.albums.iter().any(|found| {
+                        found.path == a.path
+                            && found.tracks.iter().any(|t| {
+                                a.tracks
+                                    .get(snapshot.index)
+                                    .is_some_and(|old| old.path == t.path)
+                            })
+                    })
+                }) {
+                    self.music.sync(Command::Forget);
+                }
+            }
+        }
+        if self.app.music.rescan && self.music_scan.is_none() {
+            self.app.music.rescan = false;
+            self.app.music.scanning = true;
+            self.music_scan = Some(Self::scan_music(self.root.clone()));
+        }
+        let forbidden = self.emu.is_some()
+            || matches!(
+                self.app.phase(),
+                Phase::Inserting { .. }
+                    | Phase::Playing { .. }
+                    | Phase::Ejecting { .. }
+                    | Phase::Polaroids { .. }
+            )
+            || self.app.device_info_requested()
+            || self.app.shutting_down();
+        let commands = std::mem::take(&mut self.app.music.commands);
+        for command in commands {
+            if matches!(&command, Command::Previous | Command::Next)
+                && self.music.snapshot().album.is_none()
+            {
+                continue;
+            }
+            let starts = matches!(
+                &command,
+                Command::Play { playing: true, .. }
+                    | Command::Toggle
+                    | Command::Previous
+                    | Command::Next
+            );
+            let snapshot = self.music.snapshot();
+            if starts && !snapshot.playing && snapshot.error.is_some() {
+                self.music_audio = false;
+            }
+            if starts && (forbidden || !self.prepare_music_audio()) {
+                continue;
+            }
+            self.music.sync(command);
+        }
+        if forbidden && self.music_audio {
+            self.music.sync(Command::Stop);
+            self.sink.ring().clear();
+            if let Err(e) = self.sink.open(crate::audio::GBA_HZ) {
+                eprintln!("slot: restoring game audio: {e}");
+            }
+            self.music_audio = false;
+        }
+        let headphones = self.app.headphones_active();
+        let bluetooth = self.app.bluetooth.active.is_some()
+            && self.app.audio_output() == slot_store::AudioOutput::Auto
+            && self.sink.bluetooth_active();
+        if self.music_audio
+            && ((self.music_headphones && !headphones && !self.sink.hdmi_active())
+                || (self.music_bluetooth && !bluetooth))
+        {
+            self.music.sync(Command::Pause);
+        }
+        self.music_headphones = headphones;
+        self.music_bluetooth = bluetooth;
+        let volume = self.app.output_volume();
+        if self.music_volume != Some(volume) {
+            self.music.send(Command::Volume(volume));
+            self.music_volume = Some(volume);
+        }
+        let sleeping = matches!(self.app.phase(), Phase::Doze { .. });
+        if sleeping && !self.music_sleeping && self.music_audio {
+            self.music_sleep_playing = self.music.snapshot().playing;
+            self.music.sync(Command::Pause);
+        } else if !sleeping && self.music_sleeping && self.music_sleep_playing && !forbidden {
+            if self.prepare_music_audio() {
+                self.music.sync(Command::Toggle);
+            }
+            self.music_sleep_playing = false;
+        }
+        self.music_sleeping = sleeping;
+        self.app.music.snapshot = self.music.snapshot();
+        self.app.sync_music_lid();
+        let visible =
+            self.app.music_visible() && (self.app.music.flipped || self.app.music.fullscreen);
+        if visible != self.music_visible {
+            self.music.send(Command::Visible(visible));
+            self.music_visible = visible;
+        }
+    }
+
     fn spawn_core(&mut self, stem: &str, serial: &'static str) {
         let Some((rom, platform)) = self
             .app
@@ -551,6 +820,8 @@ impl Session {
         self.app.set_platform(platform);
         self.app
             .set_video_mode(crate::video_mode::video_mode_for(&self.root, stem));
+        self.app
+            .set_run_ahead(crate::run_ahead::run_ahead_for(&self.root, stem));
         self.app.set_link_loaded(serial);
         let resume = (!self.app.starting_clean())
             .then(|| persist::read_resume(&self.root, platform, core, stem))
@@ -576,6 +847,7 @@ impl Session {
         emu.set_volume(self.app.output_volume());
         emu.set_driven(self.driven);
         self.app.set_snapshot(Box::new(emu.snapshot()));
+        self.multitap = None;
         self.emu = Some(emu);
     }
 

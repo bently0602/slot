@@ -32,6 +32,7 @@ pub struct Ring {
     underruns: AtomicU64,
     consuming: AtomicBool,
     priming: AtomicBool,
+    output_error: Mutex<Option<String>>,
 }
 
 impl Ring {
@@ -56,10 +57,12 @@ impl Ring {
             underruns: AtomicU64::new(0),
             consuming: AtomicBool::new(true),
             priming: AtomicBool::new(false),
+            output_error: Mutex::new(None),
         }
     }
 
     pub fn reopen(&self, sample_rate: u32) {
+        self.output_error.lock().unwrap().take();
         let frames = ring_capacity(sample_rate);
         let mut i = self.lock();
         i.buf = vec![0; frames * 2];
@@ -78,6 +81,15 @@ impl Ring {
         self.priming.store(false, Ordering::Relaxed);
     }
 
+    /// Output threads report failures without involving the decoder or UI.
+    pub fn report_output_error(&self, error: String) {
+        *self.output_error.lock().unwrap() = Some(error);
+    }
+
+    pub fn take_output_error(&self) -> Option<String> {
+        self.output_error.lock().unwrap().take()
+    }
+
     pub fn push(&self, samples: &[i16]) {
         let mut i = self.lock();
         let lost = write_into(&mut i, samples).len();
@@ -86,6 +98,29 @@ impl Ring {
         if lost > 0 && !self.muted() && self.capacity_frames() > 0 {
             self.overruns.fetch_add(lost as u64, Ordering::Relaxed);
         }
+    }
+
+    /// Accept only available stereo frames; music retains the unwritten tail.
+    pub fn write_available(&self, samples: &[i16]) -> usize {
+        let mut i = self.lock();
+        let room = i.buf.len().saturating_sub(i.len);
+        let n = samples.len().min(room) / 2 * 2;
+        write_into(&mut i, &samples[..n]);
+        self.queued.store(i.len, Ordering::Relaxed);
+        n
+    }
+
+    /// Drop queued audio on transport discontinuities without closing the device.
+    pub fn clear(&self) {
+        let mut i = self.lock();
+        i.head = 0;
+        i.len = 0;
+        i.pending.clear();
+        i.placed = 0;
+        i.pending_at = i.drained;
+        self.queued.store(0, Ordering::Relaxed);
+        self.priming.store(false, Ordering::Relaxed);
+        self.room.notify_all();
     }
 
     pub fn push_blocking(&self, samples: &[i16]) {

@@ -30,6 +30,11 @@ impl Power {
         self.platform.battery()
     }
 
+    /// Zero disables automatic shutdown during software standby.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
     pub fn charge(&self) -> Charge {
         self.platform.charge()
     }

@@ -4,11 +4,15 @@ use slot_store::AudioOutput;
 pub struct AudioRoute {
     pub output: AudioOutput,
     pub docked: bool,
+    pub bluetooth: Option<[u8; 6]>,
 }
 
 impl AudioRoute {
+    pub fn wants_bluetooth(self) -> bool {
+        self.output == AudioOutput::Auto && self.bluetooth.is_some()
+    }
     pub fn wants_hdmi(self) -> bool {
-        self.docked && self.output != AudioOutput::Device
+        self.docked && self.output != AudioOutput::Device && !self.wants_bluetooth()
     }
 }
 
@@ -29,6 +33,18 @@ pub(super) struct PlaybackDevice {
 }
 
 pub(super) fn routed_devices(cards: &str, pcms: &str, route: AudioRoute) -> Vec<PlaybackDevice> {
+    if route.wants_bluetooth() {
+        // Do not spill headphone audio onto speakers if the transport fails.
+        // The session returns to its normal route after BlueZ reports disconnect.
+        return vec![PlaybackDevice {
+            name: format!(
+                "bluealsa:DEV={},PROFILE=a2dp",
+                crate::bluetooth::format_address(route.bluetooth.unwrap())
+            ),
+            hdmi: false,
+            codec_card: None,
+        }];
+    }
     let mut card_names = std::collections::BTreeMap::<u32, String>::new();
     let mut current = None;
     for line in cards.lines() {

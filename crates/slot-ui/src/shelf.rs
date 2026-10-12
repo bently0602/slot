@@ -9,7 +9,35 @@ use crate::slot_chrome::{draw_empty_slot, MOUTH_H};
 
 const SIDE_SCALE: f32 = 0.78;
 const SIDE_ALPHA: f32 = 0.55;
-const COVER_YAW: f32 = 0.96;
+// Cover Flow, after the iPod's: side covers stand at one steep angle with their outer
+// edges nearest and stack closely once clear of the flat centre cover. They are dimmed a
+// little, and a little more with each step out, so the eye rests on the centre.
+const COVER_YAW: f32 = 1.15;
+const COVER_ALPHA: f32 = 0.70;
+const COVER_DIM_STEP: f32 = 0.12;
+const COVER_ALPHA_MIN: f32 = 0.35;
+const COVER_FIRST: f32 = 0.68;
+const COVER_STEP: f32 = 0.18;
+// An angled cover is a slab, not a card: its side wall shows along the outer edge, the one
+// nearest the eye. The wall is the face drawn again a little further back each time and in
+// shade, so it keeps the cart's outline and the colour of its shell.
+const COVER_DEPTH: f32 = 22.0;
+const COVER_LAYERS: u32 = 5;
+const COVER_WALL_NEAR: f32 = 0.62;
+const COVER_WALL_FAR: f32 = 0.38;
+const COVER_WALL_FROM: f32 = 0.05;
+// The sprite shader's eye distance, in pixels.
+const EYE: f32 = 600.0;
+
+/// Shared coverflow spacing/perspective for cartridges and square album covers.
+pub fn coverflow_pose(offset: f32, width: f32) -> (f32, f32, f32) {
+    let d = offset.abs();
+    (
+        offset.signum() * width * (COVER_FIRST * d.min(1.0) + COVER_STEP * (d - 1.0).max(0.0)),
+        shrink(offset),
+        offset.clamp(-1.0, 1.0) * COVER_YAW,
+    )
+}
 
 static SLACK: AtomicU32 = AtomicU32::new(0);
 
@@ -332,7 +360,7 @@ impl Shelf {
 
     fn yaw(&self, offset: f32) -> f32 {
         if self.coverflow {
-            -offset.clamp(-1.0, 1.0) * COVER_YAW
+            coverflow_pose(offset, CART_W as f32).2
         } else {
             0.0
         }
@@ -340,8 +368,7 @@ impl Shelf {
 
     fn spacing(&self, offset: f32, w: f32) -> f32 {
         if self.coverflow {
-            let d = offset.abs();
-            offset.signum() * w * (0.64 * d.min(1.0) + 0.20 * (d - 1.0).max(0.0))
+            coverflow_pose(offset, w).0
         } else {
             offset * w
         }
@@ -389,12 +416,14 @@ impl Shelf {
             let offset = target + slot as f32 - self.scroll;
             let t = offset.abs().min(1.0);
             let scale = shrink(offset);
-            let fade = if self.coverflow {
-                (1.0 - (offset.abs() - 2.0).max(0.0) / 2.0).clamp(0.0, 1.0)
+            let (side, fade) = if self.coverflow {
+                let far = (offset.abs() - 1.5).max(0.0) / 2.5;
+                let side = COVER_ALPHA - COVER_DIM_STEP * (offset.abs() - 1.0).max(0.0);
+                (side.max(COVER_ALPHA_MIN), (1.0 - far).clamp(0.0, 1.0))
             } else {
-                1.0
+                (SIDE_ALPHA, 1.0)
             };
-            let alpha = (1.0 + (SIDE_ALPHA - 1.0) * t) * (1.0 - recede) * fade;
+            let alpha = (1.0 + (side - 1.0) * t) * (1.0 - recede) * fade;
             let (cw, ch) = cart_box(cart.platform);
             let (w, h) = (cw as f32 * scale, ch as f32 * scale);
             let away = offset.signum() * (1.0 + offset.abs());
@@ -405,15 +434,17 @@ impl Shelf {
             }
             let x = x + shake;
             let y = foot_y(ch as f32) - h;
+            let mut backed = false;
             if alpha < 1.0 {
-                if cart.platform == slot_store::Platform::Psx {
+                if cart.platform.multiplayer() {
+                    backed = true;
                     out.push(
                         Draw::Rect {
                             x,
                             y,
                             w,
                             h,
-                            colour: [0.0, 0.0, 0.0, recede_alpha(alpha)],
+                            colour: [0.0, 0.0, 0.0, recede_alpha(alpha, side)],
                         }
                         .yawed(self.yaw(offset)),
                     );
@@ -423,7 +454,8 @@ impl Shelf {
                     Some(GbShell::Notched) => self.gb_shadow,
                     Some(GbShell::Rounded) => self.gbc_shadow,
                 };
-                if let Some(tex) = backing.filter(|_| cart.platform != slot_store::Platform::Psx) {
+                if let Some(tex) = backing.filter(|_| !cart.platform.multiplayer()) {
+                    backed = true;
                     out.push(
                         Draw::Tex {
                             x,
@@ -431,7 +463,7 @@ impl Shelf {
                             w,
                             h,
                             tex,
-                            alpha: recede_alpha(alpha),
+                            alpha: recede_alpha(alpha, side),
                         }
                         .yawed(self.yaw(offset)),
                     );
@@ -462,15 +494,60 @@ impl Shelf {
                     }
                 }
             };
-            out.push(face.yawed(self.yaw(offset)));
+            let yaw = self.yaw(offset);
+            if yaw.abs() > COVER_WALL_FROM {
+                let wall = out.len() - usize::from(backed);
+                let solid = (1.0 - recede) * fade;
+                out.splice(wall..wall, side_wall(face, yaw, scale, solid));
+            }
+            out.push(face.yawed(yaw));
         }
     }
+}
+
+/// The side wall of an angled cover, furthest layer first. `solid` is how much of what lies
+/// behind the cover it hides.
+fn side_wall(face: Draw, yaw: f32, scale: f32, solid: f32) -> impl Iterator<Item = Draw> {
+    let (x, y, w, h, tex, colour) = match face {
+        Draw::Tex {
+            x,
+            y,
+            w,
+            h,
+            tex,
+            alpha,
+        } => (x, y, w, h, Some(tex), [1.0, 1.0, 1.0, alpha]),
+        Draw::Rect { x, y, w, h, colour } => (x, y, w, h, None, colour),
+        _ => (0.0, 0.0, 0.0, 0.0, None, [0.0; 4]),
+    };
+    let lit = if solid > 0.0 { colour[3] / solid } else { 0.0 };
+    (1..=COVER_LAYERS).rev().map(move |layer| {
+        let back = layer as f32 / COVER_LAYERS as f32;
+        let behind = COVER_DEPTH * scale * back;
+        let near = 1.0 / (1.0 + behind * yaw.cos() / EYE);
+        let shade = (COVER_WALL_NEAR + (COVER_WALL_FAR - COVER_WALL_NEAR) * back) * lit;
+        let (lw, lh) = (w * near, h * near);
+        Draw::Yawed {
+            x: x + w / 2.0 + behind * yaw.sin() * near - lw / 2.0,
+            y: y + (h - lh) / 2.0,
+            w: lw,
+            h: lh,
+            tex,
+            colour: [
+                colour[0] * shade,
+                colour[1] * shade,
+                colour[2] * shade,
+                solid,
+            ],
+            yaw,
+        }
+    })
 }
 
 fn shrink(offset: f32) -> f32 {
     1.0 + (SIDE_SCALE - 1.0) * offset.abs().min(1.0)
 }
 
-fn recede_alpha(face_alpha: f32) -> f32 {
-    (face_alpha / SIDE_ALPHA).clamp(0.0, 1.0)
+fn recede_alpha(face_alpha: f32, side: f32) -> f32 {
+    (face_alpha / side).clamp(0.0, 1.0)
 }

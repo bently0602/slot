@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Added a Battery menu with live percentage/charging status, configurable
+  standby shutdown after 1/3/5/10/30 minutes or Never, and an option to shut down
+  while charging. The default remains three minutes, with charging standby kept
+  alive until unplugged.
+- Low battery now saves at 10% before the existing final save and shutdown at
+  5%, with success/failure feedback, retry on failed writes and preserved manual
+  slots/history. Charging and Full suppress battery protection actions.
+
+- Added a Bluetooth headphone menu for BaseOS pairing, connection and forgetting,
+  remembered headset reconnect, Auto audio routing and music pause on connection
+  loss. Physical pairing, playback and suspend/resume validation remain pending.
+
+- Added a Music shelf for folder-based MP3/FLAC albums under `Games/Music`, with
+  square coverflow and a flipping track-selection panel.
+- Music can continue while browsing, with album shuffle/repeat, ten-second seeking,
+  remembered position, and spectrum-bar or waveform visualizers.
+- Added music controls to the menu, headphone-removal pause, configurable playback
+  with the lid closed, and playback restoration across HDMI display restarts.
+  Normal startup restores music paused; launching games or external apps stops it.
+
 ## [1.5.0](https://github.com/BrandonKowalski/slot/releases/tag/v1.5.0)
 
 - Rumble regression fixed.

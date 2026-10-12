@@ -12,6 +12,30 @@ pub struct ControllerInfo {
 pub struct ControllerStatus {
     pub connected: Vec<ControllerInfo>,
     pub active: Option<String>,
+    /// The player each connected controller plays as, from 1, in the order of `connected`.
+    pub players: Vec<u8>,
+    /// The player the handheld's own buttons play as, from 1. Zero means player one.
+    pub handheld: u8,
+}
+
+impl ControllerStatus {
+    pub fn handheld_player(&self) -> u8 {
+        self.handheld.clamp(1, PLAYERS as u8)
+    }
+}
+
+pub const PLAYERS: usize = 4;
+
+/// What the external controllers are doing, which decides where their buttons go.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum ControllerMode {
+    /// Every controller drives the menus.
+    #[default]
+    Menu,
+    /// Each controller plays its own player.
+    Game,
+    /// Each controller's left and right choose its player.
+    Assign,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

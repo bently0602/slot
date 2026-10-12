@@ -194,6 +194,7 @@ pub struct AlsaSink {
     device: Option<Device>,
     route: Arc<Mutex<AudioRoute>>,
     hdmi_active: Arc<AtomicBool>,
+    bluetooth_active: Arc<AtomicBool>,
 }
 
 struct Device {
@@ -208,6 +209,7 @@ impl AlsaSink {
             device: None,
             route: Arc::new(Mutex::new(AudioRoute::default())),
             hdmi_active: Arc::new(AtomicBool::new(false)),
+            bluetooth_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -217,6 +219,7 @@ impl AlsaSink {
             let _ = d.join.join();
         }
         self.hdmi_active.store(false, Ordering::Relaxed);
+        self.bluetooth_active.store(false, Ordering::Relaxed);
     }
 }
 
@@ -238,6 +241,7 @@ impl AudioSink for AlsaSink {
         let ring = self.ring.clone();
         let route = self.route.clone();
         let hdmi_active = self.hdmi_active.clone();
+        let bluetooth_active = self.bluetooth_active.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let flag = stop.clone();
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -245,7 +249,7 @@ impl AudioSink for AlsaSink {
             .name("slot-audio".into())
             .spawn(move || {
                 let initial = *route.lock().unwrap();
-                match play(&ring, sample_rate, initial, hdmi_active) {
+                match play(&ring, sample_rate, initial, hdmi_active, bluetooth_active) {
                     Ok(mut device) => {
                         let _ = ready_tx.send(Ok(()));
                         device.run(&ring, &flag, &route);
@@ -280,6 +284,10 @@ impl AudioSink for AlsaSink {
         *self.route.lock().unwrap() = route;
     }
 
+    fn bluetooth_active(&self) -> bool {
+        self.bluetooth_active.load(Ordering::Relaxed)
+    }
+
     fn hdmi_active(&self) -> bool {
         self.hdmi_active.load(Ordering::Relaxed)
     }
@@ -293,6 +301,7 @@ struct Playback {
     route: AudioRoute,
     next_retry: Instant,
     hdmi_active: Arc<AtomicBool>,
+    bluetooth_active: Arc<AtomicBool>,
 }
 
 fn play(
@@ -300,19 +309,26 @@ fn play(
     sample_rate: u32,
     route: AudioRoute,
     hdmi_active: Arc<AtomicBool>,
+    bluetooth_active: Arc<AtomicBool>,
 ) -> Result<Playback, AudioError> {
     let alsa = Alsa::load()?;
+    let mut output_error = None;
     let pcm = match alsa.open_pcm(sample_rate, route) {
         Ok((pcm, hdmi)) => {
             hdmi_active.store(hdmi, Ordering::Relaxed);
+            bluetooth_active.store(route.wants_bluetooth(), Ordering::Relaxed);
             Some(pcm)
         }
         Err(e) => {
             eprintln!("slot: audio: {e}, retrying");
+            output_error = Some(e.to_string());
             None
         }
     };
     ring.reopen(sample_rate);
+    if let Some(error) = output_error {
+        ring.report_output_error(error);
+    }
     Ok(Playback {
         alsa,
         pcm,
@@ -321,6 +337,7 @@ fn play(
         route,
         next_retry: Instant::now() + RETRY_AFTER,
         hdmi_active,
+        bluetooth_active,
     })
 }
 
@@ -334,6 +351,7 @@ impl Playback {
             if requested != self.route {
                 self.release();
                 self.hdmi_active.store(false, Ordering::Relaxed);
+                self.bluetooth_active.store(false, Ordering::Relaxed);
                 self.route = requested;
                 self.next_retry = Instant::now();
                 self.failing = false;
@@ -350,11 +368,15 @@ impl Playback {
                     match self.alsa.open_pcm(self.rate, self.route) {
                         Ok((pcm, hdmi)) => {
                             self.hdmi_active.store(hdmi, Ordering::Relaxed);
+                            self.bluetooth_active
+                                .store(self.route.wants_bluetooth(), Ordering::Relaxed);
                             self.pcm = Some(pcm);
                             self.failing = false;
                         }
                         Err(e) => {
                             self.hdmi_active.store(false, Ordering::Relaxed);
+                            self.bluetooth_active.store(false, Ordering::Relaxed);
+                            ring.report_output_error(e.to_string());
                             if !self.failing {
                                 eprintln!("slot: audio: {e}, retrying");
                                 self.failing = true;
@@ -367,8 +389,14 @@ impl Playback {
             match self.pcm {
                 Some(pcm) => {
                     if !self.write(pcm, &buf, stop) {
+                        if !stop.load(Ordering::Relaxed) {
+                            ring.report_output_error(
+                                "Audio output write failed; see slot.log".into(),
+                            );
+                        }
                         self.release();
                         self.hdmi_active.store(false, Ordering::Relaxed);
+                        self.bluetooth_active.store(false, Ordering::Relaxed);
                         self.next_retry = Instant::now() + RETRY_AFTER;
                         std::thread::sleep(span);
                     }
@@ -473,6 +501,7 @@ mod tests {
         assert_eq!(mode, SND_PCM_NONBLOCK);
         let name = unsafe { CStr::from_ptr(name) }.to_str().unwrap();
         if name == "hdmi-unavailable"
+            || name.starts_with("bluealsa:")
             || (name == "plughw:2,0" && HDMI_FAILS.load(Ordering::Relaxed))
         {
             return -19;
@@ -584,6 +613,7 @@ mod tests {
             route: AudioRoute::default(),
             next_retry: Instant::now(),
             hdmi_active: Arc::new(AtomicBool::new(false)),
+            bluetooth_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -601,6 +631,7 @@ mod tests {
         let route = AudioRoute {
             output: slot_store::AudioOutput::Auto,
             docked: true,
+            bluetooth: None,
         };
         let (pcm, hdmi) = alsa.open_devices(GBA_HZ, route, &devices).unwrap();
         assert!(!hdmi);
@@ -612,6 +643,31 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_bluetooth_audio_does_not_open_a_speaker_fallback() {
+        let _lock = TEST_LOCK.lock().unwrap();
+        let devices = routed_devices(
+            "0 [sndcodec]: sunxi-codec",
+            "00-00: codec : playback 1",
+            AudioRoute {
+                output: slot_store::AudioOutput::Auto,
+                docked: false,
+                bluetooth: Some([1; 6]),
+            },
+        );
+        assert_eq!(devices.len(), 1);
+        assert!(alsa(full)
+            .open_devices(
+                GBA_HZ,
+                AudioRoute {
+                    bluetooth: Some([1; 6]),
+                    ..Default::default()
+                },
+                &devices
+            )
+            .is_err());
+    }
+
+    #[test]
     fn handheld_uses_the_firmware_default_and_rejects_defaults_on_hdmi_or_usb_cards() {
         let _lock = TEST_LOCK.lock().unwrap();
         let cards = "0 [sndcodec]: sunxi-codec\n2 [sndhdmi]: HDMI\n1 [USB]: USB Audio CODEC\n";
@@ -620,6 +676,7 @@ mod tests {
         let route = AudioRoute {
             output: slot_store::AudioOutput::Device,
             docked: true,
+            bluetooth: None,
         };
         let devices = routed_devices(cards, pcms, route);
         let alsa = alsa(full);
@@ -665,6 +722,7 @@ mod tests {
         let route = AudioRoute {
             output: slot_store::AudioOutput::Auto,
             docked: true,
+            bluetooth: None,
         };
         let devices = routed_devices(
             "",

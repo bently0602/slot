@@ -64,7 +64,10 @@ impl Pacer {
 }
 
 pub fn run() {
-    if run_session() {
+    let end = run_session();
+    if let SessionEnd::DeviceInfo(root) = end {
+        slot::system_app::device_info(&root);
+    } else if let SessionEnd::Restart(playing) = end {
         // Restart the process to reset the vendor EGL framebuffer cache. BaseOS
         // launches through ld-linux explicitly, so retain that invocation too.
         use std::os::unix::process::CommandExt;
@@ -76,7 +79,7 @@ pub fn run() {
             }
         };
         let mut command = std::process::Command::new(&executable);
-        let args: Vec<_> = std::env::args_os().collect();
+        let args = slot::system_app::restart_args();
         if executable
             .file_name()
             .is_some_and(|name| name.to_string_lossy().starts_with("ld-linux"))
@@ -85,13 +88,21 @@ pub fn run() {
         } else {
             command.args(args.iter().skip(1));
         }
+        // Only a display restart inherits this flag; consume it at the next boot.
+        command.env("SLOT_MUSIC_DISPLAY_RESUME", if playing { "1" } else { "0" });
         eprintln!("slot: restarting display; current game saved");
         let error = command.exec();
         eprintln!("slot: HDMI restart: {error}");
     }
 }
 
-fn run_session() -> bool {
+enum SessionEnd {
+    Stop,
+    Restart(bool),
+    DeviceInfo(PathBuf),
+}
+
+fn run_session() -> SessionEnd {
     slot::boot_time::mark("start");
     let _ = std::thread::Builder::new()
         .name("slot-fonts".into())
@@ -105,12 +116,13 @@ fn run_session() -> bool {
         Ok(size) => size,
         Err(e) => {
             eprintln!("slot: video output setup: {e}");
-            return false;
+            return SessionEnd::Stop;
         }
     };
     let route = slot::audio::AudioRoute {
         output: settings.audio_output,
         docked: hdmi.is_some(),
+        bluetooth: None,
     };
     let open_audio = move || {
         let mut sink = slot::audio::open_sink();
@@ -127,7 +139,7 @@ fn run_session() -> bool {
         Ok(s) => s,
         Err(e) => {
             eprintln!("slot: {e}");
-            return false;
+            return SessionEnd::Stop;
         }
     };
     slot::boot_time::mark("surface");
@@ -135,7 +147,7 @@ fn run_session() -> bool {
         Ok(c) => c,
         Err(e) => {
             eprintln!("slot: {e}");
-            return false;
+            return SessionEnd::Stop;
         }
     };
     slot::boot_time::mark("compositor");
@@ -149,6 +161,10 @@ fn run_session() -> bool {
     };
     slot::boot_time::mark("audio");
     let mut frontend = Frontend::boot_with(Box::new(platform), sink);
+    if let Ok(value) = std::env::var("SLOT_MUSIC_DISPLAY_RESUME") {
+        std::env::remove_var("SLOT_MUSIC_DISPLAY_RESUME");
+        frontend.music_display_resume(value == "1");
+    }
     let mut docked = hdmi.is_some();
     frontend.set_docked(docked);
     slot::boot_time::mark("frontend");
@@ -170,12 +186,16 @@ fn run_session() -> bool {
         pacer.wait();
         let began = Instant::now();
         frontend.advance(&mut input);
+        if let Some(root) = frontend.take_device_info_request() {
+            // Return first so EGL, audio and evdev close before SDL starts.
+            return SessionEnd::DeviceInfo(root);
+        }
         if frontend.restarting() {
             frontend.restart();
         }
         if frontend.powering_off() {
             frontend.poweroff();
-            return false;
+            return SessionEnd::Stop;
         }
         let changed = cable.changed();
         let active = hdmi.is_some() && cable.present();
@@ -185,7 +205,9 @@ fn run_session() -> bool {
         }
         if changed {
             match frontend.checkpoint_for_display() {
-                Ok(true) => return true,
+                Ok(true) => {
+                    return SessionEnd::Restart(frontend.music_playing());
+                }
                 Ok(false) => {}
                 Err(e) => {
                     let wait = cable.defer();
@@ -203,7 +225,7 @@ fn run_session() -> bool {
         let work = swap - began;
         if let Err(e) = surface.swap() {
             eprintln!("slot: {e}");
-            return false;
+            return SessionEnd::Stop;
         }
         let swap_took = swap.elapsed();
         slot::latency::swapped(swap_took.as_secs_f64() * 1000.0);

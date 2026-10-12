@@ -36,6 +36,9 @@ jobs:
           file "$out/System/slot" | grep -q aarch64
           file "$out/System/mgba_libretro.so" | grep -q aarch64
           file "$out/System/gpsp_libretro.so" | grep -q aarch64
+          file "$out/System/snes9x_libretro.so" | grep -q aarch64
+          test -f "$out/System/licenses/snes9x_libretro.so.source.tar.gz"
+          test -f "$out/System/licenses/snes9x-LICENSE.txt"
           test -x "$out/System/slot"
           gpsp_src_sha="$(cat vendor/gpsp-src.sha)"
           test -f "$out/System/licenses/gpsp-${gpsp_src_sha}.tar.gz"
@@ -85,7 +88,7 @@ jobs:
           cat > notes.md <<NOTES
           Unzip and copy the contents of \`slot-${GITHUB_REF_NAME}/\` onto SD2.
 
-          Emulation by mGBA (MPL-2.0) and gpSP (GPL-2.0). Their licences, patches and gpSP's source are in \`System/licenses/\`.
+          Emulation by mGBA (MPL-2.0), gpSP (GPL-2.0), PCSX ReARMed (GPL-2.0-or-later) and Snes9x (non-commercial). Licenses and corresponding source are in \`System/licenses/\`.
           NOTES
           gh release create "$GITHUB_REF_NAME" "$ZIP" --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" --notes-file notes.md

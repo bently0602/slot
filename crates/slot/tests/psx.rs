@@ -5,8 +5,17 @@ use slot_store::{Cart, Platform};
 struct DigitalCore {
     mock: slot_retro::MockCore,
     inputs: std::sync::Arc<std::sync::Mutex<Vec<slot_retro::ButtonMask>>>,
+    disc: usize,
+    state_bytes: usize,
 }
 impl slot_retro::RetroCore for DigitalCore {
+    fn discs(&self) -> (usize, usize) {
+        (self.disc, 2)
+    }
+    fn change_disc(&mut self, index: usize) -> Result<(), slot_retro::CoreError> {
+        self.disc = index;
+        Ok(())
+    }
     fn full_joypad(&self) -> bool {
         true
     }
@@ -25,10 +34,15 @@ impl slot_retro::RetroCore for DigitalCore {
         Vec::new()
     }
     fn serialize(&mut self) -> Result<Vec<u8>, slot_retro::CoreError> {
-        self.mock.serialize()
+        let mut state = self.mock.serialize()?;
+        state.push(self.disc as u8);
+        // Exercise multi-megabyte states, as used by the PS1 core.
+        state.resize(self.state_bytes, 0);
+        Ok(state)
     }
     fn unserialize(&mut self, data: &[u8]) -> Result<(), slot_retro::CoreError> {
-        self.mock.unserialize(data)
+        self.disc = usize::from(data[8]);
+        self.mock.unserialize(&data[..8])
     }
     fn save_ram(&self) -> Option<Vec<u8>> {
         self.mock.save_ram()
@@ -57,6 +71,8 @@ fn pal_timing_and_all_digital_buttons_reach_the_worker() {
         Box::new(DigitalCore {
             mock: slot_retro::MockCore::new(),
             inputs: inputs.clone(),
+            disc: 0,
+            state_bytes: 9,
         }),
         "mock".into(),
         sink.ring(),
@@ -93,6 +109,100 @@ fn pal_timing_and_all_digital_buttons_reach_the_worker() {
         log.iter().all(|&input| input == mask),
         "X/Y must stay independent buttons, including when turbo is enabled"
     );
+}
+
+fn psx_worker() -> slot::emu::EmuHandle {
+    use slot::audio::{AudioSink, StubSink};
+    let mut sink = StubSink::new();
+    sink.open(44100).unwrap();
+    slot::emu::EmuHandle::spawn(
+        Box::new(DigitalCore {
+            mock: slot_retro::MockCore::new(),
+            inputs: Default::default(),
+            disc: 0,
+            state_bytes: 4 * 1024 * 1024,
+        }),
+        "mock".into(),
+        sink.ring(),
+        None,
+        None,
+    )
+}
+
+fn psx_state(emu: &slot::emu::EmuHandle) -> Vec<u8> {
+    emu.request_state()
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap()
+}
+
+fn psx_frame(emu: &slot::emu::EmuHandle) -> u64 {
+    u64::from_le_bytes(psx_state(emu)[..8].try_into().unwrap())
+}
+
+fn wait_psx(emu: &slot::emu::EmuHandle, condition: impl Fn(u64) -> bool) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !condition(psx_frame(emu)) {
+        assert!(
+            std::time::Instant::now() < until,
+            "PS1 worker did not reach the expected frame"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn psx_rewinds_large_states_and_resumes_playback() {
+    use slot::emu::Speed;
+    let emu = psx_worker();
+    emu.set_speed(Speed::Normal);
+    wait_psx(&emu, |frame| frame >= 30);
+    let played = psx_frame(&emu);
+    emu.set_rewinding(true);
+    wait_psx(&emu, |frame| frame < played);
+    emu.set_speed(Speed::Paused);
+    let rewound = psx_frame(&emu);
+    assert!(
+        rewound < played,
+        "PS1 did not move backwards: {played} -> {rewound}"
+    );
+    emu.set_rewinding(false);
+    emu.set_speed(Speed::Normal);
+    wait_psx(&emu, |frame| frame > rewound);
+}
+
+#[test]
+fn psx_rewind_cannot_cross_a_disc_swap_state_load_or_disabled_recording() {
+    use slot::emu::Speed;
+    use std::time::Duration;
+    for boundary in 0..3 {
+        let emu = psx_worker();
+        emu.set_speed(Speed::Normal);
+        wait_psx(&emu, |frame| frame >= 18);
+        emu.set_speed(Speed::Paused);
+        let mut state = psx_state(&emu);
+        match boundary {
+            0 => emu.change_disc(1),
+            1 => {
+                state[..8].copy_from_slice(&10000u64.to_le_bytes());
+                emu.request_load(state);
+            }
+            _ => emu.set_rewind_recording(false),
+        }
+        std::thread::sleep(Duration::from_millis(60));
+        let before = psx_state(&emu);
+        emu.set_rewinding(true);
+        emu.set_speed(Speed::Normal);
+        std::thread::sleep(Duration::from_millis(180));
+        emu.set_speed(Speed::Paused);
+        assert_eq!(
+            psx_state(&emu),
+            before,
+            "history survived boundary {boundary}"
+        );
+        if boundary == 0 {
+            assert_eq!(emu.discs().0, 1);
+        }
+    }
 }
 
 #[test]
@@ -135,6 +245,6 @@ fn disc_menu_requests_valid_disc_changes_and_closes_without_ejecting() {
     app.apply(Action::GbaDown(Btn::B));
     assert!(!app.game_menu_open());
     assert!(matches!(app.phase(), Phase::Playing { .. }));
-    assert!(!app.may_rewind());
-    assert!(!app.may_fast_forward());
+    assert!(app.may_rewind());
+    assert!(app.may_fast_forward());
 }

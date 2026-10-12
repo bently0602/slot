@@ -29,4 +29,7 @@ pub trait AudioSink: Send {
     fn hdmi_active(&self) -> bool {
         false
     }
+    fn bluetooth_active(&self) -> bool {
+        false
+    }
 }

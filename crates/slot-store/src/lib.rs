@@ -8,6 +8,7 @@ mod gb_palette;
 mod gba;
 mod hdmi;
 pub mod ini;
+pub mod music;
 mod platform;
 mod ring;
 mod scan;
@@ -25,12 +26,14 @@ pub use core::{
 pub use gb_palette::GbPalette;
 pub use gba::{header_clean, header_code, header_title, header_title_code};
 pub use hdmi::HdmiScale;
+pub use music::{Album, Artwork, MusicResume, MusicSettings, Repeat, Track, VisualizerStyle};
 pub use platform::Platform;
-pub use ring::{StateEntry, StateRing, RING_MAX};
+pub use ring::{StateEntry, StateRing, RING_MAX, SAVE_SLOTS};
 pub use scan::{initial, is_hidden, listing, scan, sort_key, Cart, StoreError};
 pub use slot_state::{
-    read_slot_state, write_slot_state, AudioOutput, Shader, SlotState, BLUE_LIGHT_MAX,
-    BRIGHTNESS_MAX, FF_SPEEDS, FF_SPEED_DEFAULT, UTC_OFFSET_MAX, UTC_OFFSET_MIN, VOLUME_MAX,
+    read_slot_state, write_slot_state, AudioOutput, Shader, SleepShutdown, SlotState,
+    BLUE_LIGHT_MAX, BRIGHTNESS_MAX, FF_SPEEDS, FF_SPEED_DEFAULT, UTC_OFFSET_MAX, UTC_OFFSET_MIN,
+    VOLUME_MAX,
 };
 pub use stamp::{
     civil_from_days, days_from_civil, days_in_month, format_stamp, parse_stamp, stamp_now,

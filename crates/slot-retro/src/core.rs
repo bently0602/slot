@@ -92,11 +92,21 @@ pub trait RetroCore: Send {
     fn run_frame_linked(&mut self, p1: ButtonMask, _p2: ButtonMask) {
         self.run_frame(p1);
     }
+    /// One frame for a core with a port for each of four players.
+    fn run_frame_pads(&mut self, pads: [ButtonMask; 4]) {
+        self.run_frame_linked(pads[0], pads[1]);
+    }
     fn set_option(&mut self, _key: &str, _value: &str) {}
+    fn set_controller_port_device(&mut self, _port: u32, _device: u32) {}
     fn set_frame_skip(&mut self, _skip: bool) {}
     fn video_xrgb8888(&self) -> &[u8];
     fn take_audio(&mut self) -> Vec<i16>;
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError>;
+    /// `serialize` into a buffer the caller keeps, for a caller that saves every frame.
+    fn serialize_into(&mut self, state: &mut Vec<u8>) -> Result<(), CoreError> {
+        *state = self.serialize()?;
+        Ok(())
+    }
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError>;
     fn save_ram(&self) -> Option<Vec<u8>>;
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError>;

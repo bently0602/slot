@@ -13,6 +13,20 @@ use slot_ui::Draw;
 const STATE_LEN: usize = 400_000;
 const CHURN: usize = 12_000;
 
+#[test]
+fn clearing_history_discards_queued_states_before_a_new_timeline() {
+    let r = RewindThread::spawn(1024 * 1024);
+    for i in 0..8 {
+        r.push(synthetic_state(i));
+    }
+    r.clear();
+    assert_eq!(r.fill(), 0);
+    assert!(r.pop().is_none());
+    r.push(synthetic_state(100));
+    assert_eq!(r.pop().unwrap(), synthetic_state(100));
+    assert!(r.pop().is_none());
+}
+
 fn noise(seed: u32, len: usize) -> Vec<u8> {
     let mut x = seed;
     (0..len)
@@ -117,7 +131,7 @@ fn fill_reads_full_on_a_full_ring_and_empty_once_it_is_spent() {
 }
 
 #[test]
-fn the_rewind_bar_is_up_while_l2_is_held_and_gone_once_it_is_let_go() {
+fn menu_rewind_shows_the_game_while_a_is_held_and_pauses_on_release() {
     let d = common::tmp_root_with_carts(&["Emerald"]);
     write_slot_state(
         d.path(),
@@ -145,15 +159,20 @@ fn the_rewind_bar_is_up_while_l2_is_held_and_gone_once_it_is_let_go() {
         std::thread::sleep(Duration::from_millis(1));
     }
 
-    step(&mut s, &mut now, Some(RawEvent::Down(Btn::L2)));
+    menu_at(&mut s, &mut now, 4);
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::A)));
     for _ in 0..200 {
         step(&mut s, &mut now, None);
     }
     assert!(
         !drawn(&s).is_empty(),
-        "the rewind bar timed out while L2 was held"
+        "the rewind bar timed out while A was held"
     );
-    step(&mut s, &mut now, Some(RawEvent::Up(Btn::L2)));
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::A)));
+    assert_eq!(s.app().playback(), None);
+    assert!(s.app().game_menu_open());
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::B)));
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::B)));
     assert!(drawn(&s).is_empty(), "the bar outlived the hold");
 }
 
@@ -186,8 +205,10 @@ fn a_live_link_session_refuses_to_actually_rewind() {
         std::thread::sleep(Duration::from_millis(1));
     }
     s.app_mut().begin_link(0);
-
-    step(&mut s, &mut now, Some(RawEvent::Down(Btn::L2)));
+    s.app_mut().apply(slot_input::Action::QuickMenu);
+    assert_eq!(s.app().state_menu_row(), None);
+    assert!(s.app().refusal_active(now));
+    assert_eq!(s.app().playback(), None);
     for _ in 0..200 {
         step(&mut s, &mut now, None);
     }
@@ -195,7 +216,6 @@ fn a_live_link_session_refuses_to_actually_rewind() {
         drawn(&s).is_empty(),
         "the bar showed for a rewind a live session must refuse"
     );
-    step(&mut s, &mut now, Some(RawEvent::Up(Btn::L2)));
 }
 
 fn step(s: &mut Session, now: &mut Millis, ev: Option<RawEvent>) {
@@ -209,6 +229,96 @@ fn drawn(s: &Session) -> Vec<Draw> {
     s.app().draw(&mut out);
     out.retain(|d| !matches!(d, Draw::Game));
     out
+}
+
+#[test]
+fn psx_session_uses_menu_playback_and_honors_the_saved_rewind_setting() {
+    use slot_input::Action;
+    use slot_store::Platform;
+    let d = tempfile::tempdir().unwrap();
+    slot::root::ensure(d.path());
+    std::fs::write(d.path().join("Games/PSX/Test.exe"), [0; 32]).unwrap();
+    std::fs::write(d.path().join("Games/PSX/Other.exe"), [0; 32]).unwrap();
+    write_slot_state(
+        d.path(),
+        &SlotState {
+            cart: Some("Test".into()),
+            cart_platform: Some(Platform::Psx),
+            clock_set: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut s = Session::boot_with(
+        d.path().to_path_buf(),
+        Box::new(slot::audio::StubSink::draining()),
+    );
+    let mut now = 0;
+    let until = Instant::now() + Duration::from_secs(10);
+    while !s.game_visible() {
+        assert!(Instant::now() < until, "PS1 session did not start");
+        step(&mut s, &mut now, None);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::L2)));
+    assert!(drawn(&s).is_empty(), "ordinary PS1 L2 started rewind");
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::L2)));
+    menu_at(&mut s, &mut now, 4);
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::A)));
+    for _ in 0..100 {
+        step(&mut s, &mut now, None);
+    }
+    assert_eq!(s.app().playback(), Some(slot::app::Playback::Rewind));
+    assert!(!drawn(&s).is_empty(), "PS1 menu did not show rewind");
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::A)));
+    assert_eq!(s.app().playback(), None);
+    assert_eq!(s.app().state_menu_row(), Some(4));
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::B)));
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::B)));
+    assert!(drawn(&s).is_empty());
+
+    // Shelf settings: open Game > Rewind, switch it off, and reseat the cart.
+    s.app_mut().apply(Action::Eject);
+    let until = Instant::now() + Duration::from_secs(10);
+    while !matches!(s.app().phase(), Phase::Shelf) {
+        assert!(Instant::now() < until, "PS1 cart did not eject");
+        step(&mut s, &mut now, None);
+    }
+    s.app_mut().apply(Action::QuickMenu);
+    for button in [
+        Btn::Down,
+        Btn::Down,
+        Btn::Down,
+        Btn::A,
+        Btn::Down,
+        Btn::Down,
+        Btn::Right,
+        Btn::B,
+        Btn::B,
+    ] {
+        s.app_mut().apply(Action::GbaDown(button));
+        s.app_mut().apply(Action::GbaUp(button));
+    }
+    assert!(!slot_store::read_slot_state(d.path()).rewind);
+    assert!(!s.app().records_rewind());
+    s.app_mut().apply(Action::Insert);
+    let until = Instant::now() + Duration::from_secs(10);
+    while !s.game_visible() {
+        assert!(Instant::now() < until);
+        step(&mut s, &mut now, None);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    menu_at(&mut s, &mut now, 4);
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::A)));
+    assert_eq!(
+        s.app().playback(),
+        None,
+        "disabled rewind started from the menu"
+    );
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::A)));
+    step(&mut s, &mut now, Some(RawEvent::Down(Btn::B)));
+    step(&mut s, &mut now, Some(RawEvent::Up(Btn::B)));
+    assert!(matches!(s.app().phase(), Phase::Playing { .. }));
 }
 
 #[test]
@@ -269,4 +379,13 @@ fn the_thread_publishes_its_fill() {
     }
     let _ = r.pop();
     assert!(r.fill() > 50, "a loaded ring published fill {}", r.fill());
+}
+
+fn menu_at(s: &mut Session, now: &mut Millis, row: usize) {
+    s.app_mut().apply(slot_input::Action::QuickMenu);
+    for _ in 0..row {
+        step(s, now, Some(RawEvent::Down(Btn::Down)));
+        step(s, now, Some(RawEvent::Up(Btn::Down)));
+    }
+    assert_eq!(s.app().state_menu_row(), Some(row));
 }

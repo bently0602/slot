@@ -87,7 +87,7 @@ enum Shape {
 
 pub fn gb_shell_of(cart: &Cart) -> Option<GbShell> {
     match cart.platform {
-        Platform::Gba | Platform::Psx => None,
+        Platform::Gba | Platform::Psx | Platform::Snes => None,
         Platform::Gb | Platform::Gbc => Some(match cart.shell.map(|c| c.outline) {
             Some(Outline::Notched) => GbShell::Notched,
             Some(Outline::Rounded) => GbShell::Rounded,
@@ -156,6 +156,7 @@ pub fn seated_box(platform: Platform) -> (u32, u32) {
         Platform::Gba => (SEATED_W, SEATED_H),
         Platform::Gb | Platform::Gbc => (SEATED_W, GB_SEATED_H),
         Platform::Psx => (SEATED_W, SEATED_W),
+        Platform::Snes => (SEATED_W, 150),
     }
 }
 
@@ -163,10 +164,13 @@ pub fn cart_box(platform: Platform) -> (u32, u32) {
     if platform == Platform::Psx {
         return (312, 312);
     }
+    if platform == Platform::Snes {
+        return (360, 225);
+    }
     let s = spec(match platform {
         Platform::Gba => Shape::Gba,
         Platform::Gb | Platform::Gbc => Shape::Gb(GbShell::Notched),
-        Platform::Psx => unreachable!(),
+        Platform::Psx | Platform::Snes => unreachable!(),
     });
     (s.w, s.h)
 }
@@ -195,7 +199,10 @@ pub fn cart_face(cart: &Cart) -> CartFace {
 
 pub fn label_size(cart: &Cart) -> (u32, u32) {
     if cart.platform == Platform::Psx {
-        return (268, 268);
+        return (296, 296);
+    }
+    if cart.platform == Platform::Snes {
+        return (240, 146);
     }
     let (_, _, lw, lh) = spec(shape_of(cart)).label;
     (lw, lh)
@@ -204,6 +211,9 @@ pub fn label_size(cart: &Cart) -> (u32, u32) {
 pub fn cart_face_with(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     if cart.platform == Platform::Psx {
         return psx_face(cart, art);
+    }
+    if cart.platform == Platform::Snes {
+        return snes_face(cart, art);
     }
     let s = spec(shape_of(cart));
     let shell = shell_for(cart);
@@ -232,25 +242,53 @@ fn psx_face(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
         }
         label
     });
+    let (left, top) = (((w - lw) / 2) as usize, ((h - lh) / 2) as usize);
     for y in 0..lh as usize {
-        let at = ((y + 34) * w as usize + 34) * 4;
+        let at = ((y + top) * w as usize + left) * 4;
         rgba[at..at + lw as usize * 4]
             .copy_from_slice(&label[y * lw as usize * 4..][..lw as usize * 4]);
     }
-    if let Some(font) = text::label_font() {
-        let layout = text::fit(font, "PlayStation", 260.0, 1, 16.0, 10.0);
-        let mut header = [40, 40, 44, 255].repeat(268 * 28);
-        text::draw_centred(&mut header, 268, 28, &layout, [230, 230, 235]);
-        for y in 0..28usize {
-            let at = ((y + 3) * w as usize + 34) * 4;
-            rgba[at..at + 268 * 4].copy_from_slice(&header[y * 268 * 4..][..268 * 4]);
+    CartFace { rgba, w, h }
+}
+
+fn snes_face(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
+    let (w, h) = cart_box(Platform::Snes);
+    let shell = shell_for(cart);
+    let mut rgba =
+        [shell.colour[0], shell.colour[1], shell.colour[2], 255].repeat((w * h) as usize);
+    // Wide SNES shell with a recessed label, side grip ribs and a bottom seam.
+    for y in 0..h {
+        for x in 0..w {
+            let at = ((y * w + x) * 4) as usize;
+            let rib = (12..44).contains(&x) || (w - 44..w - 12).contains(&x);
+            if x < 4
+                || x >= w - 4
+                || y < 4
+                || y >= h - 4
+                || y == h - 22
+                || (rib && (30..h - 30).contains(&y) && y % 12 < 3)
+            {
+                for channel in &mut rgba[at..at + 3] {
+                    *channel = channel.saturating_sub(35);
+                }
+            }
         }
     }
-    for y in 4..h as usize - 4 {
-        for x in [4usize, 24, w as usize - 5] {
-            let at = (y * w as usize + x) * 4;
-            rgba[at..at + 4].copy_from_slice(&[105, 105, 112, 255]);
+    let (lw, lh) = label_size(cart);
+    let label = art.unwrap_or_else(|| {
+        let colour = label_colour(&label_text(cart));
+        let mut label = [colour[0], colour[1], colour[2], 255].repeat((lw * lh) as usize);
+        if let Some(font) = text::label_font() {
+            let layout = text::fit(font, &label_text(cart), lw as f32 - 20.0, 4, 30.0, 10.0);
+            text::draw_centred(&mut label, lw, lh, &layout, ink(colour));
         }
+        label
+    });
+    let (left, top) = (((w - lw) / 2) as usize, 24);
+    for y in 0..lh as usize {
+        let at = ((y + top) * w as usize + left) * 4;
+        rgba[at..at + lw as usize * 4]
+            .copy_from_slice(&label[y * lw as usize * 4..][..lw as usize * 4]);
     }
     CartFace { rgba, w, h }
 }

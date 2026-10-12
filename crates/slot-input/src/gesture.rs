@@ -6,7 +6,6 @@ pub const SELECT_TAP_MS: Millis = 50;
 pub const MENU_TAP_MS: Millis = 250;
 pub const MENU_DOUBLE_TAP_MS: Millis = 350;
 pub const MENU_HOLD_MS: Millis = 1000;
-pub const FF_DOUBLE_TAP_MS: Millis = 250;
 pub const MUTE_CHORD_MS: Millis = 200;
 pub const POWER_HOLD_MS: Millis = 1000;
 
@@ -76,12 +75,6 @@ pub struct Gestures {
     vol_up_ramp: Option<Millis>,
     vol_down_ramp: Option<Millis>,
     mute_fired: bool,
-    ff_on: bool,
-    ff_latched: bool,
-    ff_latching_press: bool,
-    r2_refused: bool,
-    r2_last_release: Option<Millis>,
-    rewinding: bool,
 }
 
 fn ramp_due(down: Option<Millis>, last: Option<Millis>, now: Millis) -> bool {
@@ -99,21 +92,23 @@ impl Gestures {
         Self::default()
     }
 
-    pub fn ff_latched(&self) -> bool {
-        self.ff_latched
-    }
-
-    pub fn drop_ff_latch(&mut self) -> Vec<Action> {
-        if !self.ff_latched {
-            return Vec::new();
-        }
-        self.ff_clear()
-    }
-
     pub fn feed(&mut self, ev: RawEvent, now: Millis) -> Vec<Action> {
         match ev {
             RawEvent::Down(b) => self.down(b, now),
             RawEvent::Up(b) => self.up(b, now),
+        }
+    }
+
+    /// Full gamepads keep Select + trigger combinations in the game too.
+    pub fn feed_psx(&mut self, ev: RawEvent, now: Millis) -> Vec<Action> {
+        match ev {
+            RawEvent::Down(b @ (Btn::L2 | Btn::R2)) => {
+                let mut out = self.hand_over_select(now);
+                out.push(Action::GbaDown(b));
+                out
+            }
+            RawEvent::Up(b @ (Btn::L2 | Btn::R2)) => vec![Action::GbaUp(b)],
+            _ => self.feed(ev, now),
         }
     }
 
@@ -176,8 +171,6 @@ impl Gestures {
             }
             Btn::Lid => vec![Action::LidClose],
             Btn::VolUp | Btn::VolDown => self.volume_press(b, now),
-            Btn::L2 => self.rewind_start(),
-            Btn::R2 => self.ff_down(now),
             _ => {
                 let mut out = self.hand_over_select(now);
                 out.push(Action::GbaDown(b));
@@ -199,8 +192,6 @@ impl Gestures {
             Btn::Power => self.power_up(),
             Btn::Lid => vec![Action::LidOpen],
             Btn::VolUp | Btn::VolDown => self.volume_release(b),
-            Btn::L2 => self.rewind_stop(),
-            Btn::R2 => self.ff_up(now),
             _ => vec![Action::GbaUp(b)],
         }
     }
@@ -341,68 +332,6 @@ impl Gestures {
             self.mute_fired = false;
         }
         Vec::new()
-    }
-
-    fn rewind_start(&mut self) -> Vec<Action> {
-        if self.rewinding {
-            return Vec::new();
-        }
-        let mut out = Vec::new();
-        out.extend(self.ff_clear());
-        self.rewinding = true;
-        out.push(Action::RewindStart);
-        out
-    }
-
-    fn rewind_stop(&mut self) -> Vec<Action> {
-        if !self.rewinding {
-            return Vec::new();
-        }
-        self.rewinding = false;
-        vec![Action::RewindStop]
-    }
-
-    fn ff_down(&mut self, now: Millis) -> Vec<Action> {
-        if self.rewinding {
-            self.r2_refused = true;
-            return Vec::new();
-        }
-        if self.ff_latched {
-            self.ff_latching_press = false;
-        } else {
-            let double = self
-                .r2_last_release
-                .is_some_and(|rel| now.saturating_sub(rel) <= FF_DOUBLE_TAP_MS);
-            self.ff_latched = double;
-            self.ff_latching_press = double;
-        }
-        if self.ff_on {
-            return Vec::new();
-        }
-        self.ff_on = true;
-        vec![Action::FfStart]
-    }
-
-    fn ff_up(&mut self, now: Millis) -> Vec<Action> {
-        if std::mem::take(&mut self.r2_refused) {
-            return Vec::new();
-        }
-        self.r2_last_release = Some(now);
-        if self.ff_latching_press {
-            self.ff_latching_press = false;
-            return Vec::new();
-        }
-        self.ff_clear()
-    }
-
-    fn ff_clear(&mut self) -> Vec<Action> {
-        self.ff_latched = false;
-        self.ff_latching_press = false;
-        if !self.ff_on {
-            return Vec::new();
-        }
-        self.ff_on = false;
-        vec![Action::FfStop]
     }
 }
 

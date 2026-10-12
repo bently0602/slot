@@ -161,6 +161,7 @@ fn start(
     ring: &Arc<Ring>,
 ) -> Result<cpal::Stream, AudioError> {
     let ring = ring.clone();
+    let errors = ring.clone();
     let mut scratch: Vec<i16> = Vec::new();
     let stream = device
         .build_output_stream(
@@ -175,7 +176,10 @@ fn start(
                     *o = f32::from(*s) / 32768.0;
                 }
             },
-            |e| eprintln!("slot: audio: {e}"),
+            move |e| {
+                eprintln!("slot: audio: {e}");
+                errors.report_output_error(e.to_string());
+            },
             None,
         )
         .map_err(|e| AudioError::Device(e.to_string()))?;

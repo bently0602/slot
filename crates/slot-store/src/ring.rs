@@ -5,6 +5,7 @@ use crate::core::Core;
 use crate::platform::Platform;
 
 pub const RING_MAX: usize = 10;
+pub const SAVE_SLOTS: usize = 4;
 
 const STATE_EXT: &str = "state";
 const THUMB_EXT: &str = "png";
@@ -84,6 +85,39 @@ impl StateRing {
     pub fn write_resume(&self, state: &[u8]) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         atomic_write(&self.path(RESUME, STATE_EXT), state)
+    }
+
+    /// Numbered manual states stay outside the timestamped history and resume.
+    /// Slot indices are zero-based; the files are named slot-1 through slot-4.
+    pub fn slot_path(&self, slot: usize) -> std::io::Result<PathBuf> {
+        if slot >= SAVE_SLOTS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "save slot must be between 1 and 4",
+            ));
+        }
+        Ok(self.path(&format!("slot-{}", slot + 1), STATE_EXT))
+    }
+
+    pub fn read_slot(&self, slot: usize) -> std::io::Result<Option<Vec<u8>>> {
+        match std::fs::read(self.slot_path(slot)?) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn write_slot(&self, slot: usize, state: &[u8]) -> std::io::Result<()> {
+        let path = self.slot_path(slot)?;
+        std::fs::create_dir_all(&self.dir)?;
+        atomic_write(&path, state)
+    }
+
+    pub fn remove_slot(&self, slot: usize) -> std::io::Result<()> {
+        let path = self.slot_path(slot)?;
+        std::fs::remove_file(&path)?;
+        sync_dir(&path);
+        Ok(())
     }
 
     pub fn read_resume(&self) -> std::io::Result<Option<Vec<u8>>> {

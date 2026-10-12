@@ -1,6 +1,7 @@
 use gilrs::{Axis, EventType, Gilrs};
 use slot_input::{
-    Btn, ControllerConfig, ControllerInfo, ControllerStatus, InputSource, Millis, RawEvent,
+    Btn, ControllerConfig, ControllerInfo, ControllerMode, ControllerStatus, InputSource, Millis,
+    RawEvent, PLAYERS,
 };
 use std::collections::BTreeMap;
 use winit::event::WindowEvent;
@@ -93,6 +94,9 @@ impl HostInput {
     }
 
     fn push(&mut self, btn: Btn, pressed: bool) {
+        if pressed && self.hub.builtin(RawEvent::Down(btn)) {
+            return;
+        }
         if pressed {
             crate::latency::read();
         }
@@ -188,6 +192,14 @@ impl InputSource for HostInput {
     }
     fn controller_status(&self) -> ControllerStatus {
         self.hub.status()
+    }
+    fn set_controller_mode(&mut self, mode: ControllerMode) {
+        for event in self.hub.set_mode(mode) {
+            self.pending.extend(self.mux.feed(u64::MAX, event));
+        }
+    }
+    fn player_buttons(&self) -> [Vec<Btn>; PLAYERS] {
+        self.hub.players()
     }
     fn poll(&mut self, _now: Millis) -> Vec<RawEvent> {
         self.drain_pad();

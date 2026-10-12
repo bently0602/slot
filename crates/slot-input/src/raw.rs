@@ -35,4 +35,10 @@ pub trait InputSource {
     fn controller_status(&self) -> crate::ControllerStatus {
         crate::ControllerStatus::default()
     }
+    fn set_controller_mode(&mut self, _: crate::ControllerMode) {}
+    /// The buttons each player holds on a controller that is theirs alone. A controller
+    /// that shares the handheld's player is part of `poll`'s stream instead.
+    fn player_buttons(&self) -> [Vec<Btn>; crate::PLAYERS] {
+        Default::default()
+    }
 }

@@ -8,7 +8,8 @@ use slot::input::controller_hub::ControllerHub;
 use slot::input::evdev::{Ev, EV_ABS};
 use slot::session::Session;
 use slot_input::{
-    Action, Btn, ControllerConfig, ControllerInfo, ControllerProfile, ControllerStatus, RawEvent,
+    Action, Btn, ControllerConfig, ControllerInfo, ControllerMode, ControllerProfile,
+    ControllerStatus, RawEvent,
 };
 use slot_store::{read_controller_config, write_controller_config};
 use slot_ui::{QuickRow, QuickValue};
@@ -24,6 +25,8 @@ fn status(id: Option<&str>) -> ControllerStatus {
     ControllerStatus {
         connected: id.map(info).into_iter().collect(),
         active: id.map(str::to_owned),
+        players: id.map(|_| 1).into_iter().collect(),
+        handheld: 1,
     }
 }
 
@@ -32,6 +35,7 @@ fn auto_waits_for_the_original_pad_instead_of_giving_control_to_another_pad() {
     let mut hub = ControllerHub::default();
     hub.connect(1, info("Ultimate"));
     hub.connect(2, info("Other"));
+    hub.set_mode(ControllerMode::Game);
     assert_eq!(hub.status().active.as_deref(), Some("Ultimate"));
     assert!(hub.set(2, vec![Btn::A]).is_empty());
     assert_eq!(hub.set(1, vec![Btn::B]), vec![RawEvent::Down(Btn::B)]);
@@ -48,6 +52,7 @@ fn two_identical_pads_do_not_take_over_each_others_disconnect() {
     let mut hub = ControllerHub::default();
     hub.connect(1, info("Ultimate"));
     hub.connect(2, info("Ultimate"));
+    hub.set_mode(ControllerMode::Game);
     hub.set(2, vec![Btn::A]);
     hub.disconnect(1);
     assert_eq!(hub.status().active, None);
@@ -62,6 +67,7 @@ fn profiles_and_pad_selection_release_old_buttons_and_wait_for_a_fresh_press() {
     let mut hub = ControllerHub::default();
     hub.connect(1, info("Ultimate"));
     hub.connect(2, info("Other"));
+    hub.set_mode(ControllerMode::Game);
     assert_eq!(hub.set(1, vec![Btn::A]), vec![RawEvent::Down(Btn::A)]);
     let mut config = ControllerConfig {
         profiles: vec![ControllerProfile {
@@ -321,4 +327,73 @@ fn disabling_disconnect_pause_keeps_a_docked_game_running_without_a_pad() {
     session.update_controllers(status(None));
     assert!(!session.controller_paused());
     wait_speed(&session, Speed::Normal);
+}
+
+#[test]
+fn the_players_row_opens_the_player_screen_and_back_returns_to_it() {
+    let root = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    let mut app = boot(root.path());
+    open(&mut app, QuickRow::ControllerPlayers);
+    for back in [Btn::B, Btn::A] {
+        app.apply(Action::GbaDown(Btn::A));
+        assert!(matches!(app.phase(), slot::app::Phase::Players));
+        app.apply(Action::GbaDown(Btn::Left));
+        app.apply(Action::GbaDown(Btn::Down));
+        assert!(
+            matches!(app.phase(), slot::app::Phase::Players),
+            "a direction left the screen"
+        );
+        app.apply(Action::GbaDown(back));
+        assert_eq!(app.quick_menu(), Some(QuickRow::ControllerPlayers));
+    }
+}
+
+#[test]
+fn the_player_screen_lists_each_controller_with_its_player() {
+    let root = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    let mut app = boot(root.path());
+    app.set_controller_status(ControllerStatus {
+        connected: vec![info("One"), info("Two")],
+        active: Some("One".into()),
+        players: vec![2, 1],
+        handheld: 1,
+    });
+    assert_eq!(
+        app.controller_seats(),
+        [
+            ("Handheld".to_string(), 1),
+            ("8BitDo One".to_string(), 2),
+            ("8BitDo Two".to_string(), 1)
+        ]
+    );
+    assert!(!app.multitap_wanted());
+    app.set_controller_status(ControllerStatus {
+        connected: vec![info("One"), info("Two")],
+        active: Some("One".into()),
+        players: vec![1, 3],
+        handheld: 1,
+    });
+    assert!(app.multitap_wanted(), "player three needs the multitap");
+    app.set_controller_status(ControllerStatus {
+        handheld: 4,
+        ..ControllerStatus::default()
+    });
+    assert_eq!(app.controller_seats(), [("Handheld".to_string(), 4)]);
+    assert!(
+        app.multitap_wanted(),
+        "the handheld as player four needs it too"
+    );
+}
+
+#[test]
+fn controllers_drive_menus_on_the_shelf_and_choose_players_on_the_player_screen() {
+    let root = tmp_root_with_carts(&["Emerald", "Fusion"]);
+    clocked(root.path());
+    let mut session = slot::session::Session::boot(root.path().to_path_buf());
+    assert_eq!(session.controller_mode(), ControllerMode::Menu);
+    open(session.app_mut(), QuickRow::ControllerPlayers);
+    session.app_mut().apply(Action::GbaDown(Btn::A));
+    assert_eq!(session.controller_mode(), ControllerMode::Assign);
+    session.app_mut().apply(Action::GbaDown(Btn::B));
+    assert_eq!(session.controller_mode(), ControllerMode::Menu);
 }

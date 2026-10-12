@@ -12,6 +12,7 @@ mod hud;
 mod icon;
 mod link_art;
 mod plate;
+mod players;
 mod polaroids;
 mod power_menu;
 mod quick_menu;
@@ -56,18 +57,20 @@ pub use link_art::{
 };
 pub use plate::{
     arrows_hint_face, arrows_hint_width, cap_width, centred_hints, hint_face, hint_quad, hint_row,
-    hint_width, title_face, word_face, word_width, Hint, UndoFace, ARROW_GAP, CAP, CAP_GAP,
-    HINT_EDGE, HINT_GAP, HINT_H, LEGEND_GAP, TITLE_H, TITLE_W,
+    hint_width, shelf_switch_hint_face, title_face, word_face, word_width, Hint, UndoFace,
+    ARROW_GAP, CAP, CAP_GAP, HINT_EDGE, HINT_GAP, HINT_H, LEGEND_GAP, TITLE_H, TITLE_W,
 };
+pub use players::{player_column, player_row, players_face, Seat, PLAYER_COLUMNS, PLAYER_ROWS};
 pub use polaroids::{photo_face, PhotoFace, Polaroids, DOT, LEGEND, PHOTO_H, PHOTO_W};
 pub use power_menu::{menu_face, PowerChoice, MENU_PAD};
 pub use quick_menu::{
-    quick_caret_face, quick_label_face, quick_legend_faces, quick_value_face, QuickMenu,
-    QuickMenuFaces, QuickRow, QuickValue, QUICK_EDGE, QUICK_PITCH, QUICK_SPLIT, QUICK_TOP,
+    quick_bluetooth_value_face, quick_caret_face, quick_label_face, quick_legend_faces,
+    quick_value_face, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, QUICK_EDGE,
+    QUICK_MAIN_PITCH, QUICK_PITCH, QUICK_SPLIT, QUICK_TOP,
 };
 pub use rebuild::{rebuild_count_face, rebuild_title_face, RebuildScreen};
 pub use refusal::Refusal;
-pub use shelf::{foot_y, rest_y, set_shelf_slack, Shelf};
+pub use shelf::{coverflow_pose, foot_y, rest_y, set_shelf_slack, Shelf};
 pub use shell::{
     gb_table_shells, gba_shell_for, lookup_order_is_exact_then_family_then_default, shell_for,
     shell_presets, table_keys, Finish, Shell, DEFAULT_SHELL, DMG_SHELL, DUAL_MODE_SHELL,

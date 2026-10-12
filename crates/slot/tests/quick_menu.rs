@@ -9,7 +9,7 @@ use slot_input::{Action, Btn};
 use slot_store::{read_slot_state, write_slot_state, Shader, SlotState};
 use slot_ui::{
     edge, Draw, Icon, QuickMenuFaces, QuickRow, QuickValue, TexId, MENU_PAD, OUT_W, QUICK_EDGE,
-    QUICK_PITCH, QUICK_TOP,
+    QUICK_MAIN_PITCH, QUICK_TOP,
 };
 use tempfile::TempDir;
 
@@ -93,6 +93,37 @@ fn menu_or_b_closes_it_back_onto_the_carousel_where_you_were() {
 }
 
 #[test]
+fn device_info_requests_a_system_app_without_changing_the_cartridges() {
+    let (d, mut a, _) = on_carousel();
+    let app_dir = d.path().join("System/device-info");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("device-info"), "test app").unwrap();
+    std::fs::write(d.path().join("System/device-info.sh"), "test launcher").unwrap();
+    let selected = a.selected_stem().unwrap().to_owned();
+    let carts = a.carts().count();
+    open_at(&mut a, QuickRow::DeviceInfo);
+    press(&mut a, Btn::Left);
+    assert_eq!(a.take_device_info_request(), None);
+    press(&mut a, Btn::A);
+    assert_eq!(a.take_device_info_request(), Some(d.path().to_path_buf()));
+    assert_eq!(a.take_device_info_request(), None);
+    a.return_to_device_info_menu();
+    assert_eq!(a.quick_menu(), Some(QuickRow::DeviceInfo));
+    assert_eq!(a.selected_stem(), Some(selected.as_str()));
+    assert_eq!(a.carts().count(), carts);
+    assert_eq!(a.quick_value(QuickRow::DeviceInfo), None);
+}
+
+#[test]
+fn missing_device_info_keeps_the_system_menu_open() {
+    let (_d, mut a, _) = on_carousel();
+    open_at(&mut a, QuickRow::DeviceInfo);
+    press(&mut a, Btn::A);
+    assert_eq!(a.take_device_info_request(), None);
+    assert_eq!(a.quick_menu(), Some(QuickRow::DeviceInfo));
+}
+
+#[test]
 fn the_quick_menu_is_only_on_the_carousel() {
     let d = tmp_root_with_carts(&["Emerald", "Fusion"]);
     let mut a = app_playing_in(d.path(), "Emerald");
@@ -119,8 +150,12 @@ fn up_and_down_move_the_bar_and_wrap_at_the_ends() {
         QuickRow::Screen,
         QuickRow::VideoOut,
         QuickRow::Controllers,
+        QuickRow::Bluetooth,
         QuickRow::Game,
+        QuickRow::Music,
+        QuickRow::Battery,
         QuickRow::DateTime,
+        QuickRow::DeviceInfo,
         QuickRow::About,
         QuickRow::Screen,
     ] {
@@ -557,10 +592,10 @@ fn the_bar_runs_edge_to_edge_behind_the_selected_row() {
                 _ => None,
             })
             .collect();
-        let top = QUICK_TOP + QUICK_PITCH * row.position() as f32;
+        let top = QUICK_TOP + QUICK_MAIN_PITCH * row.position() as f32;
         assert_eq!(
             bars,
-            vec![[0.0, top + 4.0, OUT_W as f32, QUICK_PITCH - 8.0]],
+            vec![[0.0, top + 4.0, OUT_W as f32, QUICK_MAIN_PITCH - 8.0]],
             "{row:?}"
         );
         press(&mut a, Btn::Down);

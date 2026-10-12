@@ -1,0 +1,136 @@
+diff --git a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
+index f316929..936a13f 100644
+--- a/src/platform/libretro/libretro.c
++++ b/src/platform/libretro/libretro.c
+@@ -99,6 +99,7 @@ static size_t audioSampleBufferSize;
+ static void* data;
+ static size_t dataSize;
+ static void* savedata;
++static struct VFile* stateScratch;
+ static struct mAVStream stream;
+ static bool sensorsInitDone;
+ static bool rumbleInitDone;
+@@ -2768,6 +2769,10 @@ void retro_unload_game(void) {
+ 		_linkUnload();
+ 	}
+ #endif
++	if (stateScratch) {
++		stateScratch->close(stateScratch);
++		stateScratch = NULL;
++	}
+ 	mCoreConfigDeinit(&core->config);
+ 	core->deinit(core);
+ 	mappedMemoryFree(data, dataSize);
+@@ -2879,15 +2884,36 @@ static bool _linkLoadState(const void* state, size_t size) {
+ }
+ #endif
+ 
++/* A frontend that runs ahead saves a state and loads it back on every frame. A state used to
++ * be built in memory mapped for that one save and unmapped after it, growing as it was
++ * written, which cost more than the save itself. One buffer is kept for the session instead.
++ * It is cleared before each save, so a state is byte for byte what a fresh buffer gave. */
+ static struct VFile* _saveState(void) {
+ #ifdef M_CORE_GBA
+ 	if (linkMode) {
+ 		return _linkSaveState();
+ 	}
+ #endif
+-	struct VFile* vfm = VFileMemChunk(NULL, 0);
+-	mCoreSaveStateNamed(core, vfm, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+-	return vfm;
++	if (!stateScratch) {
++		stateScratch = VFileMemChunk(NULL, 0);
++	} else {
++		size_t used = stateScratch->size(stateScratch);
++		void* old = stateScratch->map(stateScratch, used, MAP_WRITE);
++		if (old) {
++			memset(old, 0, used);
++			stateScratch->unmap(stateScratch, old, used);
++		}
++		stateScratch->truncate(stateScratch, 0);
++		stateScratch->seek(stateScratch, 0, SEEK_SET);
++	}
++	mCoreSaveStateNamed(core, stateScratch, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
++	return stateScratch;
++}
++
++static void _doneState(struct VFile* vfm) {
++	if (vfm != stateScratch) {
++		vfm->close(vfm);
++	}
+ }
+ 
+ size_t retro_serialize_size(void) {
+@@ -2896,7 +2922,7 @@ size_t retro_serialize_size(void) {
+ 	}
+ 	struct VFile* vfm = _saveState();
+ 	size_t size = vfm->size(vfm);
+-	vfm->close(vfm);
++	_doneState(vfm);
+ 	return size;
+ }
+ 
+@@ -2908,12 +2934,51 @@ bool retro_serialize(void* data, size_t size) {
+ 	if ((ssize_t) size > vfm->size(vfm)) {
+ 		size = vfm->size(vfm);
+ 	} else if ((ssize_t) size < vfm->size(vfm)) {
+-		vfm->close(vfm);
++		_doneState(vfm);
+ 		return false;
+ 	}
+ 	vfm->seek(vfm, 0, SEEK_SET);
+ 	vfm->read(vfm, data, size);
+-	vfm->close(vfm);
++	_doneState(vfm);
++	return true;
++}
++
++/* mCoreLoadStateNamed without its copy of the state into freshly mapped memory: the core
++ * reads the frontend's buffer where it lies. The cartridge's save memory is put back only
++ * when the state's differs from what is there now. Putting it back replaces the save memory
++ * with a copy that is written through to the real one some frames after the game last wrote
++ * to it, so doing that on every frame would keep a game's saves from the frontend for longer
++ * than it needs to, as well as mapping and unmapping the copy each time. */
++static bool _loadStateInPlace(const void* data, size_t size) {
++	if (size < core->stateSize(core) || ((uintptr_t) data & 15)) {
++		return false;
++	}
++	if (!core->loadState(core, data)) {
++		return false;
++	}
++	struct mStateExtdata extdata;
++	mStateExtdataInit(&extdata);
++	struct VFile* vfm = VFileFromConstMemory(data, size);
++	if (vfm) {
++		mCoreExtractExtdata(core, vfm, &extdata);
++		vfm->close(vfm);
++	}
++	core->loadExtraState(core, &extdata);
++
++	struct mStateExtdataItem item;
++	if (mStateExtdataGet(&extdata, EXTDATA_SAVEDATA, &item) && item.data) {
++		void* now = NULL;
++		size_t nowSize = core->savedataClone(core, &now);
++		bool same = now && nowSize == (size_t) item.size && !memcmp(now, item.data, nowSize);
++		free(now);
++		if (!same) {
++			core->savedataRestore(core, item.data, item.size, false);
++		}
++	}
++	if (mStateExtdataGet(&extdata, EXTDATA_RTC, &item) && core->rtc.d.deserialize) {
++		core->rtc.d.deserialize(&core->rtc.d, &item);
++	}
++	mStateExtdataDeinit(&extdata);
+ 	return true;
+ }
+ 
+@@ -2926,6 +2991,9 @@ bool retro_unserialize(const void* data, size_t size) {
+ 		return _linkLoadState(data, size);
+ 	}
+ #endif
++	if (_loadStateInPlace(data, size)) {
++		return true;
++	}
+ 	struct VFile* vfm = VFileFromConstMemory(data, size);
+ 	bool success = mCoreLoadStateNamed(core, vfm, SAVESTATE_RTC);
+ 	vfm->close(vfm);

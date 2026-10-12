@@ -41,7 +41,7 @@ pub fn write_video_mode(root: &Path, stem: &str, mode: VideoMode) -> std::io::Re
 }
 
 pub fn source_rect(platform: Platform, mode: VideoMode) -> [f32; 4] {
-    if platform == Platform::Psx {
+    if platform.multiplayer() {
         return WHOLE_TEXTURE;
     }
     let (w, h) = platform.picture();

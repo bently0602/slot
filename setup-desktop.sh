@@ -9,7 +9,7 @@ for option in "$@"; do
     --run) run=true ;;
     --native-graphics) native_graphics=true ;;
     -h|--help)
-      printf 'Usage: bash setup-desktop.sh [--run] [--native-graphics]\n\nInstall prerequisites, build slot, mGBA and PCSX ReARMed, and prepare ./sdcard.\nAdd --run to launch the desktop app. Safe to rerun; existing content is kept.\nWSL launches use X11 and software rendering. --native-graphics keeps your normal graphics configuration.\n'
+      printf 'Usage: bash setup-desktop.sh [--run] [--native-graphics]\n\nInstall prerequisites, build slot, mGBA, PCSX ReARMed and Snes9x, and prepare ./sdcard.\nAdd --run to launch the desktop app. Safe to rerun; existing content is kept.\nWSL launches use X11 and software rendering. --native-graphics keeps your normal graphics configuration.\n'
       exit 0
       ;;
     *) printf 'Unknown option: %s\nUse --help for usage.\n' "$option" >&2; exit 2 ;;
@@ -66,7 +66,8 @@ fi
 rust_channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml)"
 mgba_commit="$(sed -n 's/^  MGBA_COMMIT: \([0-9a-f]*\)[[:space:]]*$/\1/p' taskfile.yml)"
 pcsx_commit="$(sed -n 's/^  PCSX_COMMIT: \([0-9a-f]*\)[[:space:]]*$/\1/p' taskfile.yml)"
-if [[ -z $rust_channel || ! $mgba_commit =~ ^[0-9a-f]{40}$ || ! $pcsx_commit =~ ^[0-9a-f]{40}$ ]]; then
+snes9x_commit="$(sed -n 's/^  SNES9X_COMMIT: \([0-9a-f]*\)[[:space:]]*$/\1/p' taskfile.yml)"
+if [[ -z $rust_channel || ! $mgba_commit =~ ^[0-9a-f]{40}$ || ! $pcsx_commit =~ ^[0-9a-f]{40}$ || ! $snes9x_commit =~ ^[0-9a-f]{40}$ ]]; then
   printf 'Could not read the Rust or core versions pinned by this repository.\n' >&2
   exit 1
 fi
@@ -136,6 +137,20 @@ for notice in pcsx_rearmed.txt pcsx_rearmed-GPL-2.0.txt; do
   fi
 done
 
+snes9x_core="$build_dir/snes9x_libretro.so"
+sh cores/snes9x/build.sh build "$snes9x_commit" "$repo_dir/target/snes9x-host" "$snes9x_core" host
+if ! file "$snes9x_core" | grep -q "$core_arch"; then
+  printf 'The SNES core does not match the desktop architecture.\n' >&2
+  exit 1
+fi
+for suffix in '' .meta; do
+  if ! cmp -s "$snes9x_core$suffix" "$content_root/System/snes9x_libretro.so$suffix"; then
+    cp "$snes9x_core$suffix" "$content_root/System/snes9x_libretro.so$suffix"
+  fi
+done
+cp "$snes9x_core.source.tar.gz" "$content_root/System/licenses/snes9x-source.tar.gz"
+cp licenses/snes9x.txt licenses/snes9x-LICENSE.txt "$content_root/System/licenses/"
+
 # CPAL uses ALSA on Linux; WSLg exposes PulseAudio. Keep this configuration local
 # to slot, and respect an explicitly supplied ALSA_CONFIG_PATH.
 if [[ -n ${WSL_DISTRO_NAME:-} && -z ${ALSA_CONFIG_PATH:-} ]]; then
@@ -157,6 +172,8 @@ fi
 printf '\nDesktop setup is ready at %s\n' "$content_root"
 printf 'Put unzipped ROMs in Games/GBA, Games/GB or Games/GBC; use the mGBA core.\n'
 printf 'PlayStation: put CHD, CUE/BIN or PBP games in Games/PSX and your PS1 BIOS in BIOS.\n'
+printf 'SNES: put unzipped SFC, SMC, SWC or FIG games in Games/SNES. No console BIOS is needed.\n'
+printf 'Music: put MP3/FLAC albums in Games/Music/Artist/Album; cover.jpg or embedded covers are optional.\n'
 printf 'Keys: arrows, Z/X (A/B), A/S (shoulders), Enter (Start), right Shift (Select), Tab (Menu).\n'
 if $run; then
   if [[ -z ${DISPLAY:-} && -z ${WAYLAND_DISPLAY:-} ]]; then

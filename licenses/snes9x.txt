@@ -1,0 +1,13 @@
+Snes9x (libretro)
+Upstream: https://github.com/libretro/snes9x
+Pinned source: fae2fea08f74180759ef540ee94259213f503480
+
+Snes9x is distributed under its non-commercial license. The full license and
+copyright notices accompany the core in snes9x-LICENSE.txt. Individual components
+retain their own notices, available in the bundled source archive.
+
+Device and macOS bundles include snes9x_libretro's .source.tar.gz and .meta files
+in System/licenses. Ubuntu/WSL setup includes snes9x-source.tar.gz there. Metadata
+records the pinned commit, architecture and build recipe. The build wrapper is
+cores/snes9x/build.sh in the slot source distribution. No commercial ROMs are
+included.

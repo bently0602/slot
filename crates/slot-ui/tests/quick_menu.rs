@@ -83,8 +83,12 @@ fn the_rows_run_in_the_order_the_user_chose() {
             "Screen",
             "Video Out",
             "Controllers",
+            "Bluetooth",
             "Gameplay",
+            "Music",
+            "Battery",
             "Date & Time",
+            "Device Info",
             "About"
         ]
     );
@@ -119,7 +123,23 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::Game,
             QuickRow::VideoOut,
             QuickRow::Controllers,
-            QuickRow::ControllerReset
+            QuickRow::ControllerReset,
+            QuickRow::DeviceInfo,
+            QuickRow::ControllerPlayers,
+            QuickRow::Music,
+            QuickRow::MusicPlay,
+            QuickRow::MusicPrevious,
+            QuickRow::MusicNext,
+            QuickRow::MusicStyle,
+            QuickRow::MusicRescan,
+            QuickRow::Bluetooth,
+            QuickRow::BluetoothScan,
+            QuickRow::BluetoothConnect,
+            QuickRow::BluetoothDisconnect,
+            QuickRow::BluetoothForget,
+            QuickRow::BluetoothStatus,
+            QuickRow::Battery,
+            QuickRow::BatteryStatus,
         ]
     );
     for page in [
@@ -128,6 +148,9 @@ fn the_rows_run_in_the_order_the_user_chose() {
         &QuickRow::GAME[..],
         &QuickRow::VIDEO[..],
         &QuickRow::CONTROLLERS[..],
+        &QuickRow::MUSIC[..],
+        &QuickRow::BLUETOOTH[..],
+        &QuickRow::BATTERY[..],
     ] {
         for &row in page {
             assert_eq!(row.page(), page, "{row:?}");
@@ -165,7 +188,19 @@ fn the_values_read_as_the_menu_prints_them() {
             "30%",
             "40%",
             "Device",
-            "HDMI"
+            "HDMI",
+            "Album",
+            "Track",
+            "Bars",
+            "Waveform",
+            "Playing",
+            "Paused",
+            "1 Minute",
+            "3 Minutes",
+            "5 Minutes",
+            "10 Minutes",
+            "30 Minutes",
+            "Never"
         ]
     );
     assert_eq!(QuickValue::flag(true), QuickValue::On);

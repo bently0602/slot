@@ -35,10 +35,32 @@ pub enum QuickRow {
     ControllerReset,
     DockedLid,
     AudioOutput,
+    DeviceInfo,
+    ControllerPlayers,
+    Music,
+    MusicPlay,
+    MusicPrevious,
+    MusicNext,
+    MusicShuffle,
+    MusicRepeat,
+    MusicStyle,
+    MusicLid,
+    MusicRescan,
+    Bluetooth,
+    BluetoothScan,
+    BluetoothSelect,
+    BluetoothConnect,
+    BluetoothDisconnect,
+    BluetoothForget,
+    BluetoothStatus,
+    Battery,
+    BatteryStatus,
+    SleepShutdown,
+    ShutdownCharging,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 29] = [
+    pub const ALL: [QuickRow; 51] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -68,14 +90,40 @@ impl QuickRow {
         QuickRow::ControllerReset,
         QuickRow::DockedLid,
         QuickRow::AudioOutput,
+        QuickRow::DeviceInfo,
+        QuickRow::ControllerPlayers,
+        QuickRow::Music,
+        QuickRow::MusicPlay,
+        QuickRow::MusicPrevious,
+        QuickRow::MusicNext,
+        QuickRow::MusicShuffle,
+        QuickRow::MusicRepeat,
+        QuickRow::MusicStyle,
+        QuickRow::MusicLid,
+        QuickRow::MusicRescan,
+        QuickRow::Bluetooth,
+        QuickRow::BluetoothScan,
+        QuickRow::BluetoothSelect,
+        QuickRow::BluetoothConnect,
+        QuickRow::BluetoothDisconnect,
+        QuickRow::BluetoothForget,
+        QuickRow::BluetoothStatus,
+        QuickRow::Battery,
+        QuickRow::BatteryStatus,
+        QuickRow::SleepShutdown,
+        QuickRow::ShutdownCharging,
     ];
 
-    pub const MAIN: [QuickRow; 6] = [
+    pub const MAIN: [QuickRow; 10] = [
         QuickRow::Screen,
         QuickRow::VideoOut,
         QuickRow::Controllers,
+        QuickRow::Bluetooth,
         QuickRow::Game,
+        QuickRow::Music,
+        QuickRow::Battery,
         QuickRow::DateTime,
+        QuickRow::DeviceInfo,
         QuickRow::About,
     ];
 
@@ -85,6 +133,17 @@ impl QuickRow {
         QuickRow::ColourCorrection,
         QuickRow::GbPalettes,
         QuickRow::CoverFlow,
+    ];
+
+    pub const MUSIC: [QuickRow; 8] = [
+        QuickRow::MusicPlay,
+        QuickRow::MusicPrevious,
+        QuickRow::MusicNext,
+        QuickRow::MusicShuffle,
+        QuickRow::MusicRepeat,
+        QuickRow::MusicStyle,
+        QuickRow::MusicLid,
+        QuickRow::MusicRescan,
     ];
 
     pub const GAME: [QuickRow; 6] = [
@@ -109,7 +168,8 @@ impl QuickRow {
         QuickRow::AudioOutput,
     ];
 
-    pub const CONTROLLERS: [QuickRow; 6] = [
+    pub const CONTROLLERS: [QuickRow; 7] = [
+        QuickRow::ControllerPlayers,
         QuickRow::ControllerSelect,
         QuickRow::ControllerSwapAb,
         QuickRow::ControllerSwapXy,
@@ -120,7 +180,25 @@ impl QuickRow {
 
     pub fn page(self) -> &'static [QuickRow] {
         match self {
-            QuickRow::ControllerSelect
+            QuickRow::BatteryStatus | QuickRow::SleepShutdown | QuickRow::ShutdownCharging => {
+                &QuickRow::BATTERY
+            }
+            QuickRow::BluetoothScan
+            | QuickRow::BluetoothSelect
+            | QuickRow::BluetoothConnect
+            | QuickRow::BluetoothDisconnect
+            | QuickRow::BluetoothForget
+            | QuickRow::BluetoothStatus => &QuickRow::BLUETOOTH,
+            QuickRow::MusicPlay
+            | QuickRow::MusicPrevious
+            | QuickRow::MusicNext
+            | QuickRow::MusicShuffle
+            | QuickRow::MusicRepeat
+            | QuickRow::MusicStyle
+            | QuickRow::MusicLid
+            | QuickRow::MusicRescan => &QuickRow::MUSIC,
+            QuickRow::ControllerPlayers
+            | QuickRow::ControllerSelect
             | QuickRow::ControllerSwapAb
             | QuickRow::ControllerSwapXy
             | QuickRow::ControllerDeadzone
@@ -149,16 +227,22 @@ impl QuickRow {
 
     pub fn parent(self) -> Option<QuickRow> {
         match self.page()[0] {
+            QuickRow::BatteryStatus => Some(QuickRow::Battery),
+            QuickRow::BluetoothScan => Some(QuickRow::Bluetooth),
+            QuickRow::MusicPlay => Some(QuickRow::Music),
             QuickRow::GbaShader => Some(QuickRow::Screen),
             QuickRow::FastForward => Some(QuickRow::Game),
             QuickRow::HdmiOutput => Some(QuickRow::VideoOut),
-            QuickRow::ControllerSelect => Some(QuickRow::Controllers),
+            QuickRow::ControllerPlayers => Some(QuickRow::Controllers),
             _ => None,
         }
     }
 
     pub fn child(self) -> Option<QuickRow> {
         match self {
+            QuickRow::Battery => Some(QuickRow::BatteryStatus),
+            QuickRow::Bluetooth => Some(QuickRow::BluetoothScan),
+            QuickRow::Music => Some(QuickRow::MUSIC[0]),
             QuickRow::Screen => Some(QuickRow::SCREEN[0]),
             QuickRow::Game => Some(QuickRow::GAME[0]),
             QuickRow::VideoOut => Some(QuickRow::VIDEO[0]),
@@ -173,12 +257,33 @@ impl QuickRow {
 
     pub fn label(self) -> &'static str {
         match self {
+            QuickRow::Battery => "Battery",
+            QuickRow::BatteryStatus => "Status",
+            QuickRow::SleepShutdown => "Shutdown After Sleep",
+            QuickRow::ShutdownCharging => "Shutdown While Charging",
+            QuickRow::Bluetooth => "Bluetooth",
+            QuickRow::BluetoothScan => "Scan for Headphones",
+            QuickRow::BluetoothSelect => "Headphones",
+            QuickRow::BluetoothConnect => "Connect",
+            QuickRow::BluetoothDisconnect => "Disconnect",
+            QuickRow::BluetoothForget => "Forget Headphones",
+            QuickRow::BluetoothStatus => "Status",
+            QuickRow::Music => "Music",
+            QuickRow::MusicPlay => "Play / Pause",
+            QuickRow::MusicPrevious => "Previous Track",
+            QuickRow::MusicNext => "Next Track",
+            QuickRow::MusicShuffle => "Shuffle",
+            QuickRow::MusicRepeat => "Repeat",
+            QuickRow::MusicStyle => "Visualizer",
+            QuickRow::MusicLid => "Play With Lid Closed",
+            QuickRow::MusicRescan => "Rescan Library",
             QuickRow::FastForward => "Fast Forward",
             QuickRow::FastForwardSound => "Fast Forward Sound",
             QuickRow::Screen => "Screen",
             QuickRow::Rumble => "Rumble",
             QuickRow::DateTime => "Date & Time",
             QuickRow::About => "About",
+            QuickRow::DeviceInfo => "Device Info",
             QuickRow::GbaShader => "GBA Shader",
             QuickRow::GbShader => "GB / GBC Shader",
             QuickRow::ColourCorrection => "Color Correction",
@@ -194,6 +299,7 @@ impl QuickRow {
             QuickRow::HdmiScale => "HDMI Scaling",
             QuickRow::HdmiMargin => "HDMI Safe Area",
             QuickRow::Controllers => "Controllers",
+            QuickRow::ControllerPlayers => "Players",
             QuickRow::ControllerSelect => "Controller",
             QuickRow::ControllerSwapAb => "Swap A / B",
             QuickRow::ControllerSwapXy => "Swap X / Y",
@@ -209,12 +315,28 @@ impl QuickRow {
         matches!(
             self,
             QuickRow::DateTime
+                | QuickRow::Bluetooth
+                | QuickRow::BluetoothScan
+                | QuickRow::BluetoothConnect
+                | QuickRow::BluetoothDisconnect
+                | QuickRow::BluetoothForget
+                | QuickRow::BluetoothStatus
+                | QuickRow::Music
+                | QuickRow::MusicPlay
+                | QuickRow::MusicPrevious
+                | QuickRow::MusicNext
+                | QuickRow::MusicStyle
+                | QuickRow::MusicRescan
                 | QuickRow::About
+                | QuickRow::DeviceInfo
                 | QuickRow::Screen
                 | QuickRow::Game
                 | QuickRow::VideoOut
                 | QuickRow::Controllers
+                | QuickRow::ControllerPlayers
                 | QuickRow::ControllerReset
+                | QuickRow::Battery
+                | QuickRow::BatteryStatus
         )
     }
 
@@ -222,6 +344,21 @@ impl QuickRow {
         let page = self.page();
         page[(self.position() + page.len() - 1) % page.len()]
     }
+
+    pub const BLUETOOTH: [QuickRow; 6] = [
+        QuickRow::BluetoothScan,
+        QuickRow::BluetoothSelect,
+        QuickRow::BluetoothConnect,
+        QuickRow::BluetoothDisconnect,
+        QuickRow::BluetoothForget,
+        QuickRow::BluetoothStatus,
+    ];
+
+    pub const BATTERY: [QuickRow; 3] = [
+        QuickRow::BatteryStatus,
+        QuickRow::SleepShutdown,
+        QuickRow::ShutdownCharging,
+    ];
 
     pub fn down(self) -> QuickRow {
         let page = self.page();
@@ -257,10 +394,22 @@ pub enum QuickValue {
     Percent40,
     Device,
     Hdmi,
+    Album,
+    Track,
+    Bars,
+    Waveform,
+    Playing,
+    Paused,
+    Minute1,
+    Minutes3,
+    Minutes5,
+    Minutes10,
+    Minutes30,
+    Never,
 }
 
 impl QuickValue {
-    pub const ALL: [QuickValue; 26] = [
+    pub const ALL: [QuickValue; 38] = [
         QuickValue::Speed2,
         QuickValue::Speed3,
         QuickValue::Speed4,
@@ -287,6 +436,18 @@ impl QuickValue {
         QuickValue::Percent40,
         QuickValue::Device,
         QuickValue::Hdmi,
+        QuickValue::Album,
+        QuickValue::Track,
+        QuickValue::Bars,
+        QuickValue::Waveform,
+        QuickValue::Playing,
+        QuickValue::Paused,
+        QuickValue::Minute1,
+        QuickValue::Minutes3,
+        QuickValue::Minutes5,
+        QuickValue::Minutes10,
+        QuickValue::Minutes30,
+        QuickValue::Never,
     ];
 
     pub fn index(self) -> usize {
@@ -295,6 +456,18 @@ impl QuickValue {
 
     pub fn text(self) -> &'static str {
         match self {
+            QuickValue::Minute1 => "1 Minute",
+            QuickValue::Minutes3 => "3 Minutes",
+            QuickValue::Minutes5 => "5 Minutes",
+            QuickValue::Minutes10 => "10 Minutes",
+            QuickValue::Minutes30 => "30 Minutes",
+            QuickValue::Never => "Never",
+            QuickValue::Album => "Album",
+            QuickValue::Track => "Track",
+            QuickValue::Bars => "Bars",
+            QuickValue::Waveform => "Waveform",
+            QuickValue::Playing => "Playing",
+            QuickValue::Paused => "Paused",
             QuickValue::Device => "Device",
             QuickValue::Hdmi => "HDMI",
             QuickValue::Speed2 => "2×",
@@ -344,7 +517,8 @@ impl QuickValue {
 }
 
 pub const QUICK_PITCH: f32 = 52.0;
-pub const QUICK_TOP: f32 = (OUT_H as f32 - QUICK_PITCH * QuickRow::MAIN.len() as f32) / 2.0;
+pub const QUICK_MAIN_PITCH: f32 = 38.0;
+pub const QUICK_TOP: f32 = 24.0;
 pub const QUICK_EDGE: f32 = 32.0;
 const BAR_INSET: f32 = 4.0;
 const TYPE_DROP: f32 = 4.0;
@@ -360,6 +534,27 @@ pub fn quick_label_face(row: QuickRow) -> UndoFace {
 
 pub fn quick_value_face(text: &str, lit: bool) -> UndoFace {
     quick_text_face(text, if lit { MENU_INK } else { DIM_INK })
+}
+
+pub fn quick_bluetooth_value_face(label: &str, lit: bool, width: f32) -> UndoFace {
+    let Some(font) = text::label_font() else {
+        return UndoFace {
+            rgba: Vec::new(),
+            w: 0,
+            h: 0,
+        };
+    };
+    let layout = text::fit(font, label, width - 2.0 * MENU_PAD as f32, 1, MENU_PX, 18.0);
+    let w = width as u32;
+    let mut rgba = vec![0; (w * MENU_H * 4) as usize];
+    text::draw_centred(
+        &mut rgba,
+        w,
+        MENU_H,
+        &layout,
+        if lit { MENU_INK } else { DIM_INK },
+    );
+    UndoFace { rgba, w, h: MENU_H }
 }
 
 fn quick_text_face(label: &str, colour: [u8; 3]) -> UndoFace {
@@ -436,6 +631,8 @@ pub struct QuickMenu<'a> {
     pub values: [Option<QuickValue>; QuickRow::ALL.len()],
     pub clock: Option<[(TexId, u32, u32); 2]>,
     pub controller: Option<[(TexId, u32, u32); 2]>,
+    pub bluetooth: [Option<[(TexId, u32, u32); 2]>; 2],
+    pub battery: Option<[(TexId, u32, u32); 2]>,
     pub faces: Option<&'a QuickMenuFaces>,
 }
 
@@ -452,7 +649,7 @@ impl QuickMenu<'_> {
             x: 0.0,
             y: row_top(self.row) + BAR_INSET,
             w: OUT_W as f32,
-            h: QUICK_PITCH - 2.0 * BAR_INSET,
+            h: row_pitch(self.row) - 2.0 * BAR_INSET,
             colour: edge(),
         });
         let Some(faces) = self.faces else {
@@ -468,6 +665,9 @@ impl QuickMenu<'_> {
             let value = match row {
                 QuickRow::DateTime => self.clock.map(|c| c[lit as usize]),
                 QuickRow::ControllerSelect => self.controller.map(|c| c[lit as usize]),
+                QuickRow::BluetoothSelect => self.bluetooth[0].map(|c| c[lit as usize]),
+                QuickRow::BluetoothStatus => self.bluetooth[1].map(|c| c[lit as usize]),
+                QuickRow::BatteryStatus => self.battery.map(|c| c[lit as usize]),
                 _ => self.values[row.index()]
                     .and_then(|v| faces.values.get(v.index()))
                     .map(|v| v[lit as usize]),
@@ -495,8 +695,19 @@ impl QuickMenu<'_> {
 }
 
 fn row_top(row: QuickRow) -> f32 {
+    if row.page().len() >= 8 {
+        return QUICK_TOP + row_pitch(row) * row.position() as f32;
+    }
     let top = (OUT_H as f32 - QUICK_PITCH * row.page().len() as f32) / 2.0;
     top + QUICK_PITCH * row.position() as f32
+}
+
+fn row_pitch(row: QuickRow) -> f32 {
+    if row.page().len() >= 8 {
+        QUICK_MAIN_PITCH
+    } else {
+        QUICK_PITCH
+    }
 }
 
 fn push(out: &mut Vec<Draw>, tex: TexId, x: f32, y: f32, w: u32, h: u32) {

@@ -88,6 +88,36 @@ pub fn hint_face(key: &str, label: &str) -> UndoFace {
     UndoFace { rgba, w, h: HINT_H }
 }
 
+pub fn shelf_switch_hint_face(right: bool) -> UndoFace {
+    let w = 2 * CAP + CAP_GAP;
+    let mut rgba = vec![0u8; (w * HINT_H * 4) as usize];
+    let key = hint_face(if right { "R" } else { "L" }, "");
+    let key_x = if right { 0 } else { CAP + CAP_GAP };
+    for row in 0..HINT_H {
+        let from = (row * key.w * 4) as usize;
+        let to = ((row * w + key_x) * 4) as usize;
+        rgba[to..to + (CAP * 4) as usize]
+            .copy_from_slice(&key.rgba[from..from + (CAP * 4) as usize]);
+    }
+    if let Some(font) = crate::icon::symbols_font() {
+        let (m, cov) = font.rasterize(if right { RIGHT_CARET } else { LEFT_CARET }, KEY_PX);
+        let arrow_x = if right { CAP + CAP_GAP } else { 0 };
+        let x0 = arrow_x as i32 + (CAP as i32 - m.width as i32) / 2;
+        let y0 = (HINT_H as i32 - m.height as i32) / 2;
+        for gy in 0..m.height {
+            for gx in 0..m.width {
+                let (x, y) = (x0 + gx as i32, y0 + gy as i32);
+                if x < 0 || y < 0 || x >= w as i32 || y >= HINT_H as i32 {
+                    continue;
+                }
+                let at = ((y as u32 * w + x as u32) * 4) as usize;
+                rgba[at..at + 4].copy_from_slice(&[INK[0], INK[1], INK[2], cov[gy * m.width + gx]]);
+            }
+        }
+    }
+    UndoFace { rgba, w, h: HINT_H }
+}
+
 pub fn word_width(text: &str) -> u32 {
     band_width(text)
 }

@@ -10,10 +10,10 @@ use slot_ui::{
     arrows_hint_face, badge_face, bezel_face, cart_shadow, chip_face, chip_shadow_face,
     date_time_text, gb_cart_shadow, hhmm, hint_face, icon_face, menu_face, photo_face,
     quick_caret_face, quick_label_face, quick_legend_faces, quick_value_face, rebuild_count_face,
-    rebuild_title_face, set_clock_hint_face, socket_face, sticker_face, title_face, toast_face,
-    wallpaper_face, word_face, CartFace, GbShell, Icon, LinkBadge, PowerChoice, QuickMenuFaces,
-    QuickRow, QuickValue, RebuildScreen, StickerFields, Toast, UndoFace, ALERT_PX, BOLT_PX,
-    HUD_ICON_PX, HUD_INK, LEGEND,
+    rebuild_title_face, set_clock_hint_face, shelf_switch_hint_face, socket_face, sticker_face,
+    title_face, toast_face, wallpaper_face, word_face, CartFace, GbShell, Icon, LinkBadge,
+    PowerChoice, QuickMenuFaces, QuickRow, QuickValue, RebuildScreen, StickerFields, Toast,
+    UndoFace, ALERT_PX, BOLT_PX, HUD_ICON_PX, HUD_INK, LEGEND,
 };
 
 use crate::app::{App, LinkRow, Phase};
@@ -26,8 +26,6 @@ use crate::link_screen::{LinkSprites, Sprite};
 use crate::link_start::{LinkFail, LinkStep};
 use crate::session::Session;
 use crate::wallpaper;
-
-const DOZE_TIMEOUT: Duration = Duration::from_secs(180);
 
 const ALERT_INK: [u8; 3] = [0xf0, 0xb4, 0x3c];
 
@@ -54,13 +52,21 @@ pub struct Frontend {
     switcher: Switcher,
     clocks: Clocks,
     about: AboutFace,
+    players: PlayersFace,
     quick_clock: QuickClock,
     quick_controller: QuickClock,
+    quick_bluetooth: [QuickClock; 2],
+    quick_battery: QuickClock,
     controller_notice: Option<[(TexId, u32, u32); 2]>,
     disc_faces_uploaded: bool,
     state_faces_uploaded: bool,
+    state_slot_labels: Vec<String>,
+    state_slot_texes: Vec<TexId>,
+    state_slot_undo_label: Option<&'static str>,
+    state_slot_undo_tex: Option<TexId>,
     disc_title_key: String,
     disc_title_tex: Option<TexId>,
+    music_faces: crate::music_ui::Faces,
 }
 
 #[derive(Default)]
@@ -82,6 +88,12 @@ struct QuickClock {
 struct AboutFace {
     tex: Option<TexId>,
     battery: Option<u8>,
+}
+
+#[derive(Default)]
+struct PlayersFace {
+    tex: Option<TexId>,
+    shown: Option<Vec<(String, u8)>>,
 }
 
 #[derive(Default)]
@@ -115,10 +127,21 @@ impl Frontend {
         crate::boot_time::mark("session");
         let stale_check =
             Self::check_labels(platform.root(), session.app().carts().cloned().collect());
-        session
-            .app_mut()
-            .set_power(Power::new(platform, DOZE_TIMEOUT));
+        let timeout = slot_store::read_slot_state(platform.root())
+            .sleep_shutdown
+            .duration();
+        session.app_mut().set_power(Power::new(platform, timeout));
+        if std::env::args_os().any(|arg| arg == "--device-info-sleep") {
+            session.app_mut().apply(slot_input::Action::PowerTap);
+        }
         Frontend {
+            music_faces: crate::music_ui::Faces::new(
+                session
+                    .app()
+                    .root()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf(),
+            ),
             session,
             start: now,
             last: now,
@@ -141,11 +164,18 @@ impl Frontend {
             switcher: Switcher::default(),
             clocks: Clocks::default(),
             about: AboutFace::default(),
+            players: PlayersFace::default(),
             quick_clock: QuickClock::default(),
             quick_controller: QuickClock::default(),
+            quick_bluetooth: Default::default(),
+            quick_battery: QuickClock::default(),
             controller_notice: None,
             disc_faces_uploaded: false,
             state_faces_uploaded: false,
+            state_slot_labels: Vec::new(),
+            state_slot_texes: Vec::new(),
+            state_slot_undo_label: None,
+            state_slot_undo_tex: None,
             disc_title_key: String::new(),
             disc_title_tex: None,
         }
@@ -217,6 +247,13 @@ impl Frontend {
         let bolt = icon_face(Icon::Charging, BOLT_PX, HUD_INK);
         let bolt_id = compositor.create_texture(bolt.w, bolt.h, &bolt.rgba);
         self.session.app_mut().set_bolt_face(bolt_id);
+        let shelf_hints = [false, true].map(|right| {
+            let f = shelf_switch_hint_face(right);
+            (compositor.create_texture(f.w, f.h, &f.rgba), f.w)
+        });
+        self.session
+            .app_mut()
+            .set_shelf_switch_hint_faces(shelf_hints);
         crate::boot_time::mark("shelf faces");
         self.upload_wallpaper(compositor);
     }
@@ -350,6 +387,10 @@ impl Frontend {
     }
 
     pub fn compose(&mut self, compositor: &mut Compositor) {
+        let visible = self.session.app().music_visible();
+        let now = self.session.app().now();
+        self.music_faces
+            .sync(&mut self.session.app_mut().music, compositor, visible, now);
         compositor.set_blue_light(self.session.app().blue_light());
         compositor.set_picture(self.session.app().picture_rect());
         compositor.set_screen_effect(match self.session.app().screen_shader() {
@@ -374,16 +415,65 @@ impl Frontend {
         }
         self.cart_faces.sync(self.session.app_mut(), compositor);
         if self.session.app().state_menu_row().is_some() && !self.state_faces_uploaded {
-            let faces = ["Save State", "Load State", "Back"].map(|text| {
+            let mut upload = |text: &str| {
                 let face = menu_face(text);
                 (
                     compositor.create_texture(face.w, face.h, &face.rgba),
                     face.w,
                     face.h,
                 )
-            });
-            self.session.app_mut().set_state_menu_faces(faces.to_vec());
+            };
+            let faces = [
+                "Save State",
+                "Load State",
+                "Back",
+                "Players",
+                "Hold A: Rewind",
+                "Hold A: Fast Forward",
+            ]
+            .map(&mut upload);
+            let run_ahead = [0, 1, 2].map(|frames| upload(crate::run_ahead::label(frames)));
+            self.session
+                .app_mut()
+                .set_state_menu_faces(faces.to_vec(), run_ahead.to_vec());
             self.state_faces_uploaded = true;
+        }
+        if self.session.app().state_slot_menu().is_some() {
+            let undo = self.session.app().undo_label();
+            if undo != self.state_slot_undo_label {
+                let face = undo.map(|label| {
+                    let face = hint_face("X", label);
+                    let (w, h) = (face.w, face.h);
+                    let tex = upload(compositor, &mut self.state_slot_undo_tex, face);
+                    (tex, w, h)
+                });
+                self.session.app_mut().set_state_slot_undo_face(face);
+                self.state_slot_undo_label = undo;
+            }
+            let labels = self.session.app().state_slot_labels();
+            if labels != self.state_slot_labels {
+                let faces = labels
+                    .iter()
+                    .enumerate()
+                    .map(|(row, text)| {
+                        let face = menu_face(text);
+                        let tex = match self.state_slot_texes.get(row).copied() {
+                            Some(tex) => {
+                                compositor.update_texture(tex, face.w, face.h, &face.rgba);
+                                tex
+                            }
+                            None => {
+                                let tex = compositor.create_texture(face.w, face.h, &face.rgba);
+                                self.state_slot_texes.push(tex);
+                                tex
+                            }
+                        };
+                        (tex, face.w, face.h)
+                    })
+                    .collect();
+                self.session.app_mut().set_state_slot_faces(faces);
+                self.state_slot_labels = labels;
+            }
         }
         if self.session.app().disc_menu_row().is_some() {
             if !self.disc_faces_uploaded {
@@ -422,12 +512,19 @@ impl Frontend {
         }
         sync_clock(self.session.app_mut(), compositor, &mut self.clocks);
         sync_about(self.session.app_mut(), compositor, &mut self.about);
+        sync_players(self.session.app_mut(), compositor, &mut self.players);
         sync_quick_clock(self.session.app_mut(), compositor, &mut self.quick_clock);
         sync_quick_controller(
             self.session.app_mut(),
             compositor,
             &mut self.quick_controller,
         );
+        sync_quick_bluetooth(
+            self.session.app_mut(),
+            compositor,
+            &mut self.quick_bluetooth,
+        );
+        sync_quick_battery(self.session.app_mut(), compositor, &mut self.quick_battery);
         sync_core_picker(
             self.session.app_mut(),
             compositor,
@@ -603,11 +700,13 @@ impl Frontend {
     pub fn advance(&mut self, input: &mut dyn InputSource) {
         let now = self.now();
         input.configure_controllers(self.session.app().controller_config());
+        input.set_controller_mode(self.session.controller_mode());
         let events = input.poll(now);
         if self.rebuild.is_some() {
             return;
         }
         self.session.update_controllers(input.controller_status());
+        self.session.set_player_buttons(&input.player_buttons());
         self.session.feed(events, now);
         let dt = self.last.elapsed().as_secs_f32();
         self.last = Instant::now();
@@ -624,8 +723,10 @@ impl Frontend {
 
     pub fn advance_at(&mut self, input: &mut dyn InputSource, now: Millis, dt: f32) {
         input.configure_controllers(self.session.app().controller_config());
+        input.set_controller_mode(self.session.controller_mode());
         let events = input.poll(now);
         self.session.update_controllers(input.controller_status());
+        self.session.set_player_buttons(&input.player_buttons());
         self.session.feed(events, now);
         self.session.update(dt);
     }
@@ -638,12 +739,23 @@ impl Frontend {
         self.session.app().ready_to_power_off()
     }
 
+    pub fn take_device_info_request(&mut self) -> Option<std::path::PathBuf> {
+        self.session.app_mut().take_device_info_request()
+    }
+
     pub fn restarting(&self) -> bool {
         self.session.app().ready_to_restart()
     }
 
     pub fn checkpoint_for_display(&mut self) -> std::io::Result<bool> {
         self.session.checkpoint_for_display()
+    }
+
+    pub fn music_display_resume(&mut self, playing: bool) {
+        self.session.music_display_resume(playing);
+    }
+    pub fn music_playing(&self) -> bool {
+        self.session.app().music.snapshot.playing
     }
 
     pub fn set_docked(&mut self, docked: bool) {
@@ -882,6 +994,73 @@ fn sync_quick_controller(app: &mut App, compositor: &mut Compositor, state: &mut
     let lit = upload(compositor, &mut state.lit, lit);
     app.set_quick_controller_faces([(dim, dim_size.0, dim_size.1), (lit, lit_size.0, lit_size.1)]);
     state.shown = text;
+}
+
+fn sync_quick_battery(app: &mut App, compositor: &mut Compositor, state: &mut QuickClock) {
+    if !app
+        .quick_menu()
+        .is_some_and(|row| row.page() == QuickRow::BATTERY)
+    {
+        return;
+    }
+    let text = app.battery_text();
+    if text == state.shown {
+        return;
+    }
+    let [dim, lit] = [false, true].map(|lit| quick_value_face(&text, lit));
+    let sizes = [(dim.w, dim.h), (lit.w, lit.h)];
+    let dim = upload(compositor, &mut state.dim, dim);
+    let lit = upload(compositor, &mut state.lit, lit);
+    app.set_quick_battery_faces([(dim, sizes[0].0, sizes[0].1), (lit, sizes[1].0, sizes[1].1)]);
+    state.shown = text;
+}
+
+fn sync_quick_bluetooth(app: &mut App, compositor: &mut Compositor, states: &mut [QuickClock; 2]) {
+    if !app
+        .quick_menu()
+        .is_some_and(|row| row.page() == QuickRow::BLUETOOTH)
+    {
+        return;
+    }
+    let texts = [app.bluetooth.text(), app.bluetooth.status.clone()];
+    for (index, (state, text)) in states.iter_mut().zip(texts).enumerate() {
+        if text == state.shown {
+            continue;
+        }
+        let [dim, lit] = [false, true].map(|lit| {
+            slot_ui::quick_bluetooth_value_face(&text, lit, if index == 0 { 320.0 } else { 500.0 })
+        });
+        let sizes = [(dim.w, dim.h), (lit.w, lit.h)];
+        let dim = upload(compositor, &mut state.dim, dim);
+        let lit = upload(compositor, &mut state.lit, lit);
+        app.set_quick_bluetooth_faces(
+            index,
+            [(dim, sizes[0].0, sizes[0].1), (lit, sizes[1].0, sizes[1].1)],
+        );
+        state.shown = text;
+    }
+}
+
+fn sync_players(app: &mut App, compositor: &mut Compositor, state: &mut PlayersFace) {
+    if !app.choosing_players() {
+        return;
+    }
+    let seats = app.controller_seats();
+    if state.shown.as_ref() == Some(&seats) {
+        return;
+    }
+    let face = slot_ui::players_face(
+        &seats
+            .iter()
+            .map(|(name, player)| slot_ui::Seat {
+                name,
+                player: *player,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let id = upload(compositor, &mut state.tex, face);
+    app.set_players_face(id);
+    state.shown = Some(seats);
 }
 
 fn sync_about(app: &mut App, compositor: &mut Compositor, state: &mut AboutFace) {

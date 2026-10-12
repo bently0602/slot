@@ -128,6 +128,8 @@ fn a_real_session_keeps_producing_tv_frames_with_the_lid_closed_and_stops_on_und
             name: "8BitDo Ultimate".into(),
         }],
         active: Some("Ultimate".into()),
+        players: vec![1],
+        handheld: 1,
     });
     session.feed([RawEvent::Down(Btn::Right), RawEvent::Down(Btn::Lid)], 100);
     wait_speed(&session, Speed::Normal);
@@ -156,6 +158,7 @@ fn auto_audio_finds_hdmi_by_name_then_the_codec_and_avoids_usb_sound_cards() {
     let route = AudioRoute {
         output: AudioOutput::Auto,
         docked: true,
+        bluetooth: None,
     };
     assert_eq!(
         playback_devices(CARDS, PCMS, route),
@@ -195,7 +198,8 @@ fn auto_audio_finds_hdmi_by_name_then_the_codec_and_avoids_usb_sound_cards() {
             PCMS,
             AudioRoute {
                 output: AudioOutput::Hdmi,
-                docked: false
+                docked: false,
+                bluetooth: None,
             }
         ),
         ["plug:default", "default", "plughw:0,0"]
@@ -289,7 +293,8 @@ fn session_routing_tracks_the_saved_setting_and_dock_state_without_replacing_the
         routes.lock().unwrap().last().copied(),
         Some(AudioRoute {
             output: AudioOutput::Device,
-            docked: true
+            docked: true,
+            bluetooth: None,
         })
     );
     session.set_docked(false);
@@ -298,7 +303,8 @@ fn session_routing_tracks_the_saved_setting_and_dock_state_without_replacing_the
         routes.lock().unwrap().last().copied(),
         Some(AudioRoute {
             output: AudioOutput::Device,
-            docked: false
+            docked: false,
+            bluetooth: None,
         })
     );
     assert!(Arc::ptr_eq(&ring, &session.audio_ring()));

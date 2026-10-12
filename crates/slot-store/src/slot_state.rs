@@ -46,6 +46,55 @@ pub struct SlotState {
     pub hdmi_margin: u8,
     pub docked_lid: bool,
     pub audio_output: AudioOutput,
+    pub sleep_shutdown: SleepShutdown,
+    pub shutdown_charging: bool,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
+pub enum SleepShutdown {
+    Minute1,
+    #[default]
+    Minutes3,
+    Minutes5,
+    Minutes10,
+    Minutes30,
+    Never,
+}
+
+impl SleepShutdown {
+    pub const ALL: [Self; 6] = [
+        Self::Minute1,
+        Self::Minutes3,
+        Self::Minutes5,
+        Self::Minutes10,
+        Self::Minutes30,
+        Self::Never,
+    ];
+
+    pub fn minutes(self) -> u8 {
+        match self {
+            Self::Minute1 => 1,
+            Self::Minutes3 => 3,
+            Self::Minutes5 => 5,
+            Self::Minutes10 => 10,
+            Self::Minutes30 => 30,
+            Self::Never => 0,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        let minutes: u8 = value.parse().ok()?;
+        Self::ALL.into_iter().find(|s| s.minutes() == minutes)
+    }
+
+    pub fn step(self, right: bool) -> Self {
+        let at = Self::ALL.iter().position(|s| *s == self).unwrap_or(1);
+        Self::ALL[(at + if right { 1 } else { Self::ALL.len() - 1 }) % Self::ALL.len()]
+    }
+
+    pub fn duration(self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.minutes()) * 60)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Default)]
@@ -155,6 +204,8 @@ impl Default for SlotState {
             hdmi_margin: 0,
             docked_lid: true,
             audio_output: AudioOutput::Auto,
+            sleep_shutdown: SleepShutdown::default(),
+            shutdown_charging: false,
         }
     }
 }
@@ -209,6 +260,11 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.docked_lid as u8,
         s.audio_output.name()
     ));
+    text.push_str(&format!(
+        "sleep_shutdown={}\nshutdown_charging={}\n",
+        s.sleep_shutdown.minutes(),
+        s.shutdown_charging as u8
+    ));
     atomic_write(&state_path(root), text.as_bytes())
 }
 
@@ -241,6 +297,8 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut hdmi_margin = None;
     let mut docked_lid = None;
     let mut audio_output = None;
+    let mut sleep_shutdown = None;
+    let mut shutdown_charging = None;
     for line in text.lines().filter(|l| !l.is_empty()) {
         let Some((key, value)) = line.split_once('=') else {
             continue;
@@ -269,6 +327,8 @@ fn parse(text: &str) -> Option<SlotState> {
             "hdmi_auto" => hdmi_auto = flag(value),
             "docked_lid" => docked_lid = flag(value),
             "audio_output" => audio_output = AudioOutput::parse(value),
+            "sleep_shutdown" => sleep_shutdown = SleepShutdown::parse(value),
+            "shutdown_charging" => shutdown_charging = flag(value),
             "hdmi_1080p" => hdmi_1080p = flag(value),
             "hdmi_scale" => hdmi_scale = HdmiScale::parse(value),
             "hdmi_margin" => hdmi_margin = level(value, 10).filter(|n| [0, 5, 10].contains(n)),
@@ -308,6 +368,8 @@ fn parse(text: &str) -> Option<SlotState> {
         hdmi_margin: hdmi_margin.unwrap_or(fallback.hdmi_margin),
         docked_lid: docked_lid.unwrap_or(fallback.docked_lid),
         audio_output: audio_output.unwrap_or(fallback.audio_output),
+        sleep_shutdown: sleep_shutdown.unwrap_or(fallback.sleep_shutdown),
+        shutdown_charging: shutdown_charging.unwrap_or(fallback.shutdown_charging),
     })
 }
 
