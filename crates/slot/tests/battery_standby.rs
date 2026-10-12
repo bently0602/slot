@@ -164,6 +164,8 @@ fn every_new_game_gets_a_low_battery_checkpoint() {
     a.on_battery(battery(10, Charge::Discharging));
     a.apply(Action::Eject);
     a.update(2.0);
+    a.update(2.0);
+    assert!(matches!(a.phase(), Phase::Shelf));
     a.apply(Action::Insert);
     a.on_core_ready();
     a.update(2.0);

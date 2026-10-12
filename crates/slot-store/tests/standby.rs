@@ -3,6 +3,7 @@ use slot_store::{read_slot_state, write_slot_state, SleepShutdown, SlotState};
 #[test]
 fn standby_choices_round_trip_and_old_or_invalid_keys_preserve_preferences() {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("Config")).unwrap();
     for choice in SleepShutdown::ALL {
         let state = SlotState {
             sleep_shutdown: choice,

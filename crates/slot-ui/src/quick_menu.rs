@@ -259,8 +259,8 @@ impl QuickRow {
         match self {
             QuickRow::Battery => "Battery",
             QuickRow::BatteryStatus => "Status",
-            QuickRow::SleepShutdown => "Shutdown After Sleep",
-            QuickRow::ShutdownCharging => "Shutdown While Charging",
+            QuickRow::SleepShutdown => "Sleep to Shutdown",
+            QuickRow::ShutdownCharging => "While Charging",
             QuickRow::Bluetooth => "Bluetooth",
             QuickRow::BluetoothScan => "Scan for Headphones",
             QuickRow::BluetoothSelect => "Headphones",

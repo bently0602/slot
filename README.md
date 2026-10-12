@@ -201,8 +201,8 @@ Charging, Full, Discharging, Status Unknown, or Unavailable when the battery
 cannot be read. Percentage refreshes every ten seconds; charging status refreshes
 every second. The shelf's charging bolt and status LED remain available.
 
-**Shutdown After Sleep** offers **1, 3, 5, 10, or 30 minutes**, or **Never**.
-The default remains three minutes. **Shutdown While Charging** defaults Off;
+**Sleep to Shutdown** offers **1, 3, 5, 10, or 30 minutes**, or **Never**.
+The default remains three minutes. **While Charging** defaults Off;
 Charging or Full keeps standby alive, and unplugging starts a fresh delay.
 Turn it On to use the selected delay while charging too. Both settings survive
 restarts. Active closed-lid music and docked play do not start the standby timer.
