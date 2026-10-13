@@ -249,6 +249,20 @@ For a single command without changing the rest of the terminal session:
 DOCKER_DEFAULT_PLATFORM=linux/arm64 task dist:device OUT=dist-device
 ```
 
+On native ARM64, device tasks build directly by default. To compile against
+Bullseye rather than the host's newer glibc, force the device containers:
+
+```bash
+sudo env SLOT_DEVICE_DOCKER=1 DOCKER_DEFAULT_PLATFORM=linux/arm64 task dist:device OUT=dist-device
+```
+
+The GitHub release workflow uses this mode on `ubuntu-24.04-arm`. Task runs on
+the runner with access to Docker and its workspace; Slot and the cores build in
+`rust:1-bullseye`, and Device Info builds in its separate Bullseye SDK container.
+This mode uses sudo for assembly because Docker creates root-owned output
+directories on Linux. The normal `setup-device.sh` workflow still runs as your
+usual user.
+
 The task builds the frontend, builds both patched emulator cores, creates the
 content folders, and packages scripts, licenses, and core source metadata.
 It downloads the required container image and sources automatically.
@@ -450,6 +464,20 @@ the generated mGBA source directory to the container's Git `safe.directory`
 configuration when required. Use this updated script if your fork has an older
 copy; avoid trusting every directory with `safe.directory '*'`.
 
+### Device Info exits silently, or reports Go files needing gofmt
+
+Older Windows checkouts can give Go files CRLF line endings. Device Info's
+formatting check rejects these before compiling. The repository now requires LF
+for `*.go` and prints the affected files. Normalize an existing checkout in WSL:
+
+```bash
+sed -i 's/\r$//' apps/device-info/*.go
+bash setup-device.sh
+```
+
+If files still fail the check, format them with `gofmt -w apps/device-info/*.go`
+using Go 1.24. Build caches can be reused.
+
 ### Only the final Task failure message is visible
 
 The final `exit status` line identifies the failed task, but the useful compiler
@@ -462,7 +490,8 @@ set -o pipefail
 task core:device 2>&1 | tee /tmp/slot-mgba-build.log
 ```
 
-Replace `core:device` with `core:gpsp` or `build:device` as appropriate. After
+Replace `core:device` with `core:gpsp`, `build:device`, or
+`app:device-info:device` as appropriate. After
 fixing the cause, rerun `task dist:device OUT=dist-device` to assemble the package.
 
 ## Everyday development loop

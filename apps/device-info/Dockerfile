@@ -9,7 +9,7 @@ RUN printf '%s\n' \
        > /etc/apt/sources.list \
     && sed -n 's/^deb /deb-src /p' /etc/apt/sources.list > /etc/apt/sources.list.d/source.list \
     && apt-get update && apt-get install -y --no-install-recommends \
-       ca-certificates curl build-essential pkg-config autoconf automake libtool \
+       ca-certificates curl build-essential pkg-config autoconf automake libtool patch \
        libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev libsdl2-gfx-dev \
        libegl1-mesa-dev libgles2-mesa-dev libasound2-dev \
        xvfb xauth xdotool imagemagick \
@@ -17,14 +17,21 @@ RUN printf '%s\n' \
     && curl -fsSL "https://github.com/JohnnyonFlame/SDL-malifbdev-rot/archive/${SDL_COMMIT}.tar.gz" \
        -o /opt/SDL2-source.tar.gz \
     && tar -xzf /opt/SDL2-source.tar.gz --strip-components=1 -C /opt/sdl-source \
-    && cd /opt/sdl-source && ./autogen.sh \
+    && cd /opt/companion-source \
+    && apt-get source --download-only libsdl2-image libsdl2-ttf libsdl2-gfx
+
+# This revision's Autoconf recipe nests Mali under KMSDRM and omits its sources.
+# Enable the framebuffer backend independently, keeping DRM/GBM off the device.
+COPY sdl-mali-autoconf.patch /opt/sdl-mali-autoconf.patch
+RUN cd /opt/sdl-source \
+    && patch -p1 < /opt/sdl-mali-autoconf.patch \
+    && ./autogen.sh \
     && ./configure --prefix=/opt/slot-sdl --enable-video-mali --enable-video-opengles \
        --disable-video-x11 --disable-video-wayland --disable-video-kmsdrm \
        --disable-video-vulkan --disable-video-opengl --disable-video-rpi \
        --disable-video-directfb --disable-libudev --enable-alsa --enable-alsa-shared \
-    && make -j4 && make install \
-    && cd /opt/companion-source \
-    && apt-get source --download-only libsdl2-image libsdl2-ttf libsdl2-gfx
+    && grep -q '^#define SDL_VIDEO_DRIVER_MALI 1$' include/SDL_config.h \
+    && make -j4 && make install
 
 WORKDIR /src/apps/device-info
 ENV PKG_CONFIG_PATH=/opt/slot-sdl/lib/pkgconfig
@@ -48,6 +55,7 @@ RUN dpkg --add-architecture arm64 && apt-get update \
        --disable-video-x11 --disable-video-wayland --disable-video-kmsdrm \
        --disable-video-vulkan --disable-video-opengl --disable-video-rpi \
        --disable-video-directfb --disable-libudev --enable-alsa --enable-alsa-shared \
+    && grep -q '^#define SDL_VIDEO_DRIVER_MALI 1$' include/SDL_config.h \
     && make -j4 && make install
 ENV GOARCH=arm64 CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc CXX=aarch64-linux-gnu-g++
 ENV PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig

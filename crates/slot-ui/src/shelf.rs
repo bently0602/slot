@@ -381,7 +381,12 @@ impl Shelf {
     }
 
     pub fn draw(&self, shake: f32, out: &mut Vec<Draw>) {
-        self.draw_row(None, shake, 0.0, 1.0, out);
+        self.draw_below(shake, 0.0, out);
+    }
+
+    /// Reserve a header above tall cartridges without moving the slot itself.
+    pub fn draw_below(&self, shake: f32, top: f32, out: &mut Vec<Draw>) {
+        self.draw_row_below(None, shake, 0.0, 1.0, top, out);
         draw_empty_slot(out);
     }
 
@@ -391,6 +396,18 @@ impl Shelf {
         shake: f32,
         recede: f32,
         dim: f32,
+        out: &mut Vec<Draw>,
+    ) {
+        self.draw_row_below(hidden, shake, recede, dim, 0.0, out);
+    }
+
+    fn draw_row_below(
+        &self,
+        hidden: Option<&str>,
+        shake: f32,
+        recede: f32,
+        dim: f32,
+        top: f32,
         out: &mut Vec<Draw>,
     ) {
         let recede = recede.clamp(0.0, 1.0);
@@ -433,7 +450,12 @@ impl Shelf {
                 continue;
             }
             let x = x + shake;
-            let y = foot_y(ch as f32) - h;
+            let drop = if top > 0.0 {
+                (top - rest_y(ch as f32)).max(0.0)
+            } else {
+                0.0
+            };
+            let y = foot_y(ch as f32) - h + drop;
             let mut backed = false;
             if alpha < 1.0 {
                 if cart.platform.multiplayer() {

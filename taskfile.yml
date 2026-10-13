@@ -320,14 +320,14 @@ tasks:
     cmds:
       - |
         set -eu
-        if [ "$(uname -s)-$(uname -m)" = "Linux-aarch64" ]; then
+        if [ "$(uname -s)-$(uname -m)" = "Linux-aarch64" ] && [ "${SLOT_DEVICE_DOCKER:-0}" != 1 ]; then
           sh -c '{{.CMD}}'
         else
           docker run --rm -v "$PWD":/src -w /src rust:1-bullseye sh -c '{{.CMD}}'
         fi
 
   build:device:
-    desc: Build for the H700, in an arm64 container unless this is already one
+    desc: Build for the H700; SLOT_DEVICE_DOCKER=1 also uses a container on ARM64 hosts
     cmds:
       - task: device:sh
         vars:

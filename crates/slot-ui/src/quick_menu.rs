@@ -521,7 +521,8 @@ pub const QUICK_MAIN_PITCH: f32 = 38.0;
 pub const QUICK_TOP: f32 = 24.0;
 pub const QUICK_EDGE: f32 = 32.0;
 const BAR_INSET: f32 = 4.0;
-const TYPE_DROP: f32 = 4.0;
+// Capital letters sit one pixel below the center of this font's line box.
+const TYPE_DROP: f32 = -1.0;
 const CARET_GAP: f32 = 14.0;
 const CARET_PX: f32 = 24.0;
 const LEGEND_Y: f32 = 427.0;
@@ -657,7 +658,7 @@ impl QuickMenu<'_> {
         };
         let (right, pad) = (OUT_W as f32 - QUICK_EDGE, MENU_PAD as f32);
         for &row in self.row.page() {
-            let y = row_top(row) + TYPE_DROP;
+            let y = row_top(row) + (row_pitch(row) - MENU_H as f32) / 2.0 + TYPE_DROP;
             let lit = row == self.row;
             if let Some(&(tex, w, h)) = faces.labels.get(row.index()) {
                 push(out, tex, QUICK_EDGE - pad, y, w, h);

@@ -2162,7 +2162,7 @@ fn slot_text_alpha(a: &App, tex: slot_ui::TexId) -> f32 {
 }
 
 #[test]
-fn a_letter_jump_shows_the_letter_in_the_slot_and_fades_like_the_shelf_name() {
+fn a_letter_jump_fades_back_to_the_persistent_category_name() {
     let mut a = app_with_carts(&["Alpha", "Bravo"]);
     let face = slot_ui::TexId::from_raw(77);
     assert_eq!(
@@ -2170,6 +2170,11 @@ fn a_letter_jump_shows_the_letter_in_the_slot_and_fades_like_the_shelf_name() {
         Some("Game Boy Advance"),
         "the console shelf alongside Music was not named"
     );
+    a.set_shelf_platform_face(face, 140);
+    let category_alpha = slot_text_alpha(&a, face);
+    assert!(category_alpha > 0.0, "the category was not visible");
+    a.update(5.0);
+    assert_eq!(slot_text_alpha(&a, face), category_alpha);
 
     a.apply(Action::GbaDown(Btn::Down));
     assert_eq!(a.slot_text().as_deref(), Some("B"));
@@ -2179,15 +2184,19 @@ fn a_letter_jump_shows_the_letter_in_the_slot_and_fades_like_the_shelf_name() {
     assert!(slot_text_alpha(&a, face) > 0.0, "the letter never showed");
     a.update(5.0);
     assert_eq!(slot_text_alpha(&a, face), 0.0, "the letter never faded");
+    assert_eq!(a.slot_text().as_deref(), Some("Game Boy Advance"));
+    a.set_shelf_platform_face(face, 140);
+    assert_eq!(slot_text_alpha(&a, face), category_alpha);
 
     a.apply(Action::GbaDown(Btn::Left));
     a.apply(Action::GbaDown(Btn::Down));
     assert_eq!(a.slot_text().as_deref(), Some("B"));
+    a.set_shelf_platform_face(face, 20);
     a.update(1.0 / 60.0);
     a.update(0.5);
     assert!(
         slot_text_alpha(&a, face) > 0.0,
-        "jumping to the letter already printed did not show it again"
+        "jumping to the same letter did not show it again"
     );
 }
 

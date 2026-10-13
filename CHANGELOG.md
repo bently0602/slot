@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Fixed Device Info's missing Mali framebuffer driver, added packaged-driver
+  validation and startup diagnostics, and used the BaseOS loader on handhelds.
+
+- Centered menu labels, values and arrows vertically in their highlight bars
+  on both compact menu pages and taller submenu pages.
+
+- Music status on console shelves appears between the L/R category hints with
+  a play/pause icon, a shortened track title and a padded Now Playing hint.
+
+- Shelf category names stay visible; alphabet-jump letters fade back to the
+  category name.
+
+- Release builds now run Task on the ARM64 runner with Docker available, while
+  keeping device compilation in Bullseye containers. Release checks include the
+  Device Info binary, SDL runtime and source archive.
+
+- Fixed silent Device Info build failures in Windows/WSL checkouts by requiring
+  LF line endings for Go sources and displaying formatting errors with a repair
+  command.
+
 - Added a Battery menu with live percentage/charging status, configurable
   standby shutdown after 1/3/5/10/30 minutes or Never, and an option to shut down
   while charging. The default remains three minutes, with charging standby kept

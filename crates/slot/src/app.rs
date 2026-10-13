@@ -682,6 +682,9 @@ impl App {
     }
 
     fn slot_name_alpha(&self) -> f32 {
+        if self.slot_letter.is_none() {
+            return SLOT_NAME_ALPHA;
+        }
         let Some(at) = self.shelf_named else {
             return 0.0;
         };
@@ -2581,6 +2584,16 @@ impl App {
             self.music.release();
         }
         self.clock += dt as f64 * 1000.0;
+        if self.slot_letter.is_some()
+            && self.shelf_named.is_some_and(|at| {
+                self.now().saturating_sub(at)
+                    >= SLOT_NAME_IN_MS + SLOT_NAME_HOLD_MS + SLOT_NAME_OUT_MS
+            })
+        {
+            self.slot_letter = None;
+            self.shelf_named = None;
+            self.clear_shelf_platform();
+        }
         if self.name_pending && self.shelf_platform.face.is_some() {
             self.name_pending = false;
             self.shelf_named = Some(self.now());
@@ -3036,6 +3049,10 @@ impl App {
             }
             return;
         }
+        let shelf_music = matches!(self.phase, Phase::Shelf)
+            && self.shelf_kind != ShelfKind::Music
+            && self.core_picker.is_none()
+            && self.game_menu.is_none();
         match &self.phase {
             Phase::SetClock {
                 picker, from_menu, ..
@@ -3081,7 +3098,15 @@ impl App {
                         draw_empty_slot(out);
                     }
                     _ => {
-                        self.shelf().draw(self.shelf_shake(), out);
+                        let top = if shelf_music
+                            && self.music.snapshot.album.is_some()
+                            && self.music.shelf_status.is_some()
+                        {
+                            crate::music_ui::SHELF_STATUS_BOTTOM
+                        } else {
+                            0.0
+                        };
+                        self.shelf().draw_below(self.shelf_shake(), top, out);
                         draw_slot_name(self.shelf_platform, self.slot_name_alpha(), out);
                     }
                 }
@@ -3161,8 +3186,8 @@ impl App {
                 return;
             }
         }
-        if matches!(self.phase, Phase::Shelf) && self.shelf_kind != ShelfKind::Music {
-            self.music.draw_footer(self.now(), out);
+        if shelf_music {
+            self.music.draw_shelf_status(self.now(), out);
         }
         if let Some(picker) = self.core_picker_shown() {
             self.draw_core_picker(&picker, out);

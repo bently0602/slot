@@ -2,6 +2,10 @@
 # endings: a hunk whose context lines were normalised on checkout no longer matches the file
 # it patches, and a core that ships any source with CRLF would stop applying.
 cores/**/*.patch -text
+apps/device-info/*.patch -text
 
 # Shell scripts must use Unix line endings, including in Windows checkouts.
 *.sh text eol=lf
+
+# gofmt requires LF, including when building a Windows checkout through WSL.
+*.go text eol=lf

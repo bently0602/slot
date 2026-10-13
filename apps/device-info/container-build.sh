@@ -20,7 +20,12 @@ else
     export LD_LIBRARY_PATH="/opt/slot-sdl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 go mod download
-test -z "$(gofmt -l ./*.go)"
+unformatted="$(gofmt -l ./*.go)"
+if [ -n "$unformatted" ]; then
+    printf 'Device Info: Go source files need gofmt (including LF line endings):\n%s\n' "$unformatted" >&2
+    printf 'Run gofmt -w apps/device-info/*.go from the repository root, then retry.\n' >&2
+    exit 1
+fi
 go test -tags nonextuifonts ./...
 go build -buildvcs=false -tags nonextuifonts -ldflags='-s -w' -o "$APP_OUTPUT/device-info" .
 
@@ -52,6 +57,7 @@ printf '%s\n' "$resolved" | awk '/=> \// {print $3}' | while IFS= read -r librar
 
 cp /opt/sdl-source/LICENSE.txt "$APP_OUTPUT/licenses/SDL2.txt"
 cp /opt/SDL2-source.tar.gz "$APP_OUTPUT/licenses/SDL2-source.tar.gz"
+cp /opt/sdl-mali-autoconf.patch "$APP_OUTPUT/licenses/SDL2-mali-autoconf.patch"
 tar -czf "$APP_OUTPUT/licenses/SDL-companions-source.tar.gz" -C /opt companion-source
 mkdir -p "$APP_OUTPUT/licenses/runtime-sources"
 (cd "$APP_OUTPUT/licenses/runtime-sources" && sort -u "$packages" | xargs -r apt-get source --download-only)
@@ -74,6 +80,7 @@ cp /src/apps/device-info/go.sum "$APP_OUTPUT/licenses/go.sum"
 # Include this GPL app's corresponding source and vendored Go dependencies.
 source_dir="$(mktemp -d)"
 cp /src/apps/device-info/*.go /src/apps/device-info/*.sh \
+    /src/apps/device-info/*.patch \
     /src/apps/device-info/go.mod /src/apps/device-info/go.sum \
     /src/apps/device-info/controls.json /src/apps/device-info/Dockerfile \
     /src/apps/device-info/README.md /src/apps/device-info/HackGen-LICENSE.txt "$source_dir/"
@@ -82,4 +89,11 @@ cp /src/LICENSE "$source_dir/LICENSE"
 tar -czf "$APP_OUTPUT/licenses/device-info-source.tar.gz" -C "$source_dir" .
 rm -rf "$source_dir"
 LD_LIBRARY_PATH="$APP_OUTPUT/lib" SLOT_ROOT=/src/sdcard "$APP_OUTPUT/device-info" --text
+if [ "$APP_MODE" = device ]; then
+    drivers="$(LD_LIBRARY_PATH="$APP_OUTPUT/lib" "$APP_OUTPUT/device-info" --video-drivers)"
+    printf '%s\n' "$drivers" | grep -Fxq mali || {
+        printf 'Device Info: packaged SDL has no Mali framebuffer driver. Available: %s\n' "$drivers" >&2
+        exit 1
+    }
+fi
 echo "Device Info ready: $APP_OUTPUT"

@@ -12,22 +12,27 @@ jobs:
   build:
     name: card tree
     runs-on: ubuntu-24.04-arm
-    container: rust:1-bullseye
+    env:
+      DOCKER_DEFAULT_PLATFORM: linux/arm64
+      # Keep device binaries compatible with BaseOS even on the Ubuntu runner.
+      SLOT_DEVICE_DOCKER: '1'
     outputs:
       zip: ${{ steps.package.outputs.zip }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install zip, cmake and Task
+      - name: Install zip and Task, and check Docker
         run: |
           set -eu
-          sed -i '/bullseye-security/d' /etc/apt/sources.list
-          apt-get -o Acquire::Check-Valid-Until=false update
-          apt-get install -y --no-install-recommends zip cmake
-          curl -fsSL https://taskfile.dev/install.sh | sh -s -- -b /usr/local/bin
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zip
+          curl -fsSL https://taskfile.dev/install.sh | sudo sh -s -- -b /usr/local/bin
+          docker info
 
       - name: Build the tree
-        run: task dist:device OUT="slot-${GITHUB_REF_NAME}"
+        # Docker writes root-owned outputs on Linux; keep assembly under the
+        # same user while Task runs on the host with valid bind-mount paths.
+        run: sudo --preserve-env=DOCKER_DEFAULT_PLATFORM,SLOT_DEVICE_DOCKER task dist:device OUT="slot-${GITHUB_REF_NAME}"
 
       - name: Check what is about to ship
         run: |
@@ -37,6 +42,10 @@ jobs:
           file "$out/System/mgba_libretro.so" | grep -q aarch64
           file "$out/System/gpsp_libretro.so" | grep -q aarch64
           file "$out/System/snes9x_libretro.so" | grep -q aarch64
+          file "$out/System/device-info/device-info" | grep -q aarch64
+          test -x "$out/System/device-info/device-info"
+          test -f "$out/System/device-info/lib/libSDL2-2.0.so.0"
+          test -f "$out/System/device-info/licenses/device-info-source.tar.gz"
           test -f "$out/System/licenses/snes9x_libretro.so.source.tar.gz"
           test -f "$out/System/licenses/snes9x-LICENSE.txt"
           test -x "$out/System/slot"
