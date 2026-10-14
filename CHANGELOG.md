@@ -2,14 +2,46 @@
 
 ## Unreleased
 
+- Restored selectable screen effects for every game system, including SNES and
+  PlayStation. Menu > Screen and the shader shortcuts offer LCD3x, Grid, Dot,
+  Simpletex and Off, with saved preferences for each system.
+
+- Save State and Load State now show each occupied slot's saved date and time
+  using the device's configured time offset. Existing saves use their file
+  timestamps; undoing an overwrite restores the original saved date too.
+
+- Run ahead now uses a separate emulator instance for the speculative picture,
+  preserving continuous audio on the primary instance. This avoids distortion
+  caused by loading a save state into the audible core every frame.
+  Hidden frames now skip rendering through the libretro A/V interface, speculative
+  restores use the core's fast path, and primary audio is queued before speculative
+  work. These reduce SNES run-ahead overhead and audio starvation risk on H700.
+
+- Added Turn Bluetooth Off to the Bluetooth menu, shutting down its radio and
+  services while preserving pairings. The off setting survives restarts;
+  Scan or Connect enables Bluetooth again.
+
+- Added Turn Screen Off to the slot selection menu. Music keeps playing while
+  the screen is blank, and any button restores the previous brightness without
+  activating the selected game.
+
+- Made console-shelf game artwork about 10% smaller while preserving the
+  relative cartridge sizes and each system's proportions.
+
+- Added Reset Game to the in-game menu, restarting the current cartridge without
+  restoring a stuck state. Emulator snapshot waits now time out so recovery
+  remains accessible; existing on-disk saves and state slots are preserved.
+
 - Fixed Device Info's missing Mali framebuffer driver, added packaged-driver
   validation and startup diagnostics, and used the BaseOS loader on handhelds.
 
 - Centered menu labels, values and arrows vertically in their highlight bars
   on both compact menu pages and taller submenu pages.
 
-- Music status on console shelves appears between the L/R category hints with
-  a play/pause icon, a shortened track title and a padded Now Playing hint.
+- Music pauses when leaving the Music category and retains its track and position
+  for explicit resume. Removed the music header and Now Playing shortcut from
+  console shelves so game artwork uses its normal space. Menu → Music focuses
+  Music before playback controls can start audio.
 
 - Shelf category names stay visible; alphabet-jump letters fade back to the
   category name.
@@ -36,7 +68,7 @@
 
 - Added a Music shelf for folder-based MP3/FLAC albums under `Games/Music`, with
   square coverflow and a flipping track-selection panel.
-- Music can continue while browsing, with album shuffle/repeat, ten-second seeking,
+- Music can continue while browsing albums, with album shuffle/repeat, ten-second seeking,
   remembered position, and spectrum-bar or waveform visualizers.
 - Added music controls to the menu, headphone-removal pause, configurable playback
   with the lid closed, and playback restoration across HDMI display restarts.

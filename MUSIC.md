@@ -15,6 +15,14 @@ decoding resumes; position subtracts queued frames from submitted audio. An outp
 that stops draining for three seconds pauses with an error. Game/system-app launch
 stops the worker's transport and clears music before restoring game audio.
 
+Playback is scoped to the Music category, including album browsing, track panels,
+visualizers and menus opened from Music. Switching to a console shelf pauses and
+checkpoints the track without losing its position; returning to Music waits for
+explicit resume. Session synchronization blocks queued playback commands and sleep
+resume outside Music. Opening Menu → Music focuses Music before playback controls
+can start audio. Console shelves have no music status header or Y shortcut, and
+reserve no space above their artwork for music.
+
 Analysis uses pre-volume floating-point samples and excludes menu sound effects.
 RealFFT analyzes Hann-windowed 2,048-sample windows into 32 logarithmic bands, with
 smoothing and falling peaks. Bounded snapshots are timestamped against the audible
@@ -55,8 +63,9 @@ geometry, startup/display resume and lid/power transitions. Fixtures contain onl
 original generated tones; provenance is recorded alongside them.
 
 Physical handheld validation remains required: sustained playback while browsing
-and visualizing, controller responsiveness, memory behavior, lid-closed playback,
-headphone/speaker/HDMI output routing, sleep/shutdown and actual HDMI reconnection.
+albums within Music and visualizing, controller responsiveness, memory behavior,
+lid-closed playback, headphone/speaker/HDMI output routing, sleep/shutdown and
+actual HDMI reconnection.
 These cannot be established by simulated sinks or render geometry tests.
 
 ### Results in this environment

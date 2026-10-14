@@ -229,6 +229,7 @@ fn a_card_from_before_the_settings_keeps_all_its_values() {
             hdmi_margin: 0,
             docked_lid: true,
             audio_output: slot_store::AudioOutput::Auto,
+            ..SlotState::default()
         }
     );
 }
@@ -244,6 +245,8 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         colour_correction: true,
         shader_gba: Shader::Dot,
         shader_gb: Shader::Off,
+        shader_snes: Shader::Lcd3x,
+        shader_psx: Shader::Simpletex,
         eject_save: false,
         turbo: false,
         rewind: false,
@@ -261,6 +264,8 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "colour_correction=1",
         "shader_gba=dot",
         "shader_gb=off",
+        "shader_snes=lcd3x",
+        "shader_psx=simpletex",
         "eject_save=0",
         "turbo=0",
         "rewind=0",
@@ -268,6 +273,43 @@ fn the_quick_menu_settings_round_trip_as_their_own_lines() {
         "gb_palette=GBC Dark Green →A",
     ] {
         assert!(text.lines().any(|l| l == line), "no {line} in {text:?}");
+    }
+}
+
+#[test]
+fn every_screen_effect_round_trips_for_every_system() {
+    let d = tmp_root();
+    for shader in Shader::ALL {
+        let state = SlotState {
+            shader_gba: shader,
+            shader_gb: shader,
+            shader_snes: shader,
+            shader_psx: shader,
+            ..SlotState::default()
+        };
+        write_slot_state(d.path(), &state).unwrap();
+        assert_eq!(read_slot_state(d.path()), state);
+    }
+    let state = SlotState {
+        shader_gba: Shader::Dot,
+        shader_gb: Shader::Grid,
+        ..SlotState::default()
+    };
+    write_slot_state(d.path(), &state).unwrap();
+    let path = d.path().join("Config/slot.state");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    for replacement in ["", "shader_snes=unknown\nshader_psx=unknown\n"] {
+        let old: String = saved
+            .lines()
+            .filter(|line| !line.starts_with("shader_snes=") && !line.starts_with("shader_psx="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        std::fs::write(&path, old + replacement).unwrap();
+        assert_eq!(
+            read_slot_state(d.path()),
+            state,
+            "old or invalid console settings must preserve the other settings"
+        );
     }
 }
 

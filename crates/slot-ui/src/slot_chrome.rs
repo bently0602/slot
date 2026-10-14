@@ -1,13 +1,14 @@
 use std::sync::OnceLock;
 
 use slot_gfx::{Draw, TexId, OUT_H, OUT_W};
-use slot_store::Cart;
 use slot_store::Theme;
+use slot_store::{Cart, Platform};
 
 use crate::cart::{cart_box, label_colour, label_text, seated_box, SEATED_W};
 use crate::footer::Printed;
 use crate::icon::icon_box;
 use crate::plate::HINT_H;
+use crate::psx::{draw_psx, PsxTextures};
 use crate::shelf::foot_y;
 
 pub const ALERT_PX: f32 = 44.0;
@@ -99,6 +100,10 @@ impl SlotChrome<'_> {
     }
 
     pub fn draw_with_yaw(&self, yaw: f32, out: &mut Vec<Draw>) {
+        self.draw_with_media(yaw, None, out);
+    }
+
+    pub fn draw_with_media(&self, yaw: f32, psx: Option<PsxTextures>, out: &mut Vec<Draw>) {
         let seat = self.seat.clamp(0.0, 1.0);
         let dim = self.dim.clamp(0.0, 1.0);
         if dim > 0.0 {
@@ -156,7 +161,12 @@ impl SlotChrome<'_> {
                 }
             }
         };
-        out.push(face.yawed(yaw * (1.0 - k)));
+        let (x, y, cw, ch) = if self.cart.platform == Platform::Psx {
+            draw_psx(self.face, psx, self.rest, scale, seat, yaw, out)
+        } else {
+            out.push(face.yawed(yaw * (1.0 - k)));
+            (x, y, cw, ch)
+        };
 
         if let Some((tex, alpha)) = self.alert {
             let (w, h) = icon_box(ALERT_PX);

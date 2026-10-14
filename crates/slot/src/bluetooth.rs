@@ -109,6 +109,7 @@ pub enum Operation {
     Disconnect,
     Forget,
     Refresh,
+    PowerOff,
 }
 
 struct ResultState {
@@ -130,6 +131,7 @@ pub struct Bluetooth {
         Receiver<Result<ResultState, String>>,
     )>,
     next_poll: Instant,
+    off_requested: bool,
 }
 
 impl Default for Bluetooth {
@@ -142,6 +144,7 @@ impl Default for Bluetooth {
             status: "Scan to find headphones".into(),
             pending: None,
             next_poll: Instant::now(),
+            off_requested: false,
         }
     }
 }
@@ -156,6 +159,11 @@ impl Bluetooth {
             selected,
             ..Self::default()
         };
+        let off = std::fs::read_to_string(root.join("Config/bluetooth-off.txt"))
+            .is_ok_and(|text| text.trim() == "1");
+        if off {
+            bt.status = "Bluetooth off".into();
+        }
         if let Some(mac) = selected {
             bt.devices.push(Headphones {
                 address: mac,
@@ -164,7 +172,13 @@ impl Bluetooth {
                 connected: false,
             });
             #[cfg(all(feature = "device", not(feature = "host"), target_os = "linux"))]
-            bt.request(Operation::Connect);
+            if !off {
+                bt.request(Operation::Connect);
+            }
+        }
+        #[cfg(all(feature = "device", not(feature = "host"), target_os = "linux"))]
+        if off {
+            bt.request(Operation::PowerOff);
         }
         bt
     }
@@ -197,6 +211,10 @@ impl Bluetooth {
 
     pub fn request(&mut self, op: Operation) {
         if self.busy() {
+            if matches!(op, Operation::PowerOff) {
+                self.off_requested = true;
+                self.status = "Turning Bluetooth off...".into();
+            }
             return;
         }
         if !cfg!(all(
@@ -204,7 +222,12 @@ impl Bluetooth {
             not(feature = "host"),
             target_os = "linux"
         )) {
-            self.status = "Pair in computer settings".into();
+            self.status = if matches!(op, Operation::PowerOff) {
+                "Turn off in computer settings"
+            } else {
+                "Pair in computer settings"
+            }
+            .into();
             return;
         }
         let Some(root) = self.root.clone() else {
@@ -215,7 +238,7 @@ impl Bluetooth {
         } else {
             self.selected
         };
-        if !matches!(op, Operation::Scan) && selected.is_none() {
+        if !matches!(op, Operation::Scan | Operation::PowerOff) && selected.is_none() {
             self.status = "Scan and select headphones".into();
             return;
         }
@@ -226,6 +249,7 @@ impl Bluetooth {
                 Operation::Disconnect => "Disconnecting...",
                 Operation::Forget => "Forgetting...",
                 Operation::Refresh => "Checking connection...",
+                Operation::PowerOff => "Turning Bluetooth off...",
             }
             .into();
         }
@@ -251,6 +275,12 @@ impl Bluetooth {
                 Err(mpsc::TryRecvError::Disconnected) => Err("Bluetooth worker stopped".into()),
             };
             self.pending = None;
+            // Finish an in-flight startup before shutting down, so it cannot
+            // re-enable the radio after the user has asked to turn it off.
+            if std::mem::take(&mut self.off_requested) {
+                self.request(Operation::PowerOff);
+                return;
+            }
             self.next_poll = Instant::now() + Duration::from_secs(3);
             match result {
                 Ok(result) => {
@@ -274,6 +304,11 @@ impl Bluetooth {
                         self.selected = self.devices.first().map(|d| d.address);
                     }
                     self.status = result.message;
+                    if matches!(op, Operation::PowerOff) {
+                        self.save_radio_off(true);
+                    } else if matches!(op, Operation::Scan | Operation::Connect) {
+                        self.save_radio_off(false);
+                    }
                     if result.forgotten || matches!(op, Operation::Disconnect) {
                         // Explicit disconnect also disables reconnect at the next boot.
                         self.save(self.active);
@@ -308,6 +343,24 @@ impl Bluetooth {
         if let Err(e) = result {
             self.status = "Could not save headphones".into();
             eprintln!("slot: Bluetooth settings: {e}");
+        }
+    }
+
+    fn save_radio_off(&mut self, off: bool) {
+        let Some(root) = &self.root else { return };
+        let path = root.join("Config/bluetooth-off.txt");
+        let result = if off {
+            std::fs::create_dir_all(path.parent().unwrap())
+                .and_then(|_| slot_store::atomic_write(&path, b"1\n"))
+        } else {
+            match std::fs::remove_file(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            }
+        };
+        if let Err(error) = result {
+            self.status = "Could not save Bluetooth power".into();
+            eprintln!("slot: Bluetooth power setting: {error}");
         }
     }
 }
@@ -430,6 +483,23 @@ fn operate(
     selected: Option<[u8; 6]>,
     mut known: Vec<Headphones>,
 ) -> Result<ResultState, String> {
+    if matches!(op, Operation::PowerOff) {
+        let script = root.join("System/bluetooth.sh");
+        if !script.is_file() {
+            return Err("Rebuild Bluetooth bundle".into());
+        }
+        let mut command = Command::new("/bin/sh");
+        command.arg(script).arg("off");
+        run(command, 15)?;
+        for device in &mut known {
+            device.connected = false;
+        }
+        return Ok(ResultState {
+            devices: known,
+            message: "Bluetooth off".into(),
+            forgotten: false,
+        });
+    }
     if matches!(op, Operation::Refresh) {
         let mac = selected.ok_or("No headphones selected")?;
         let text = ctl(&["info", &format_address(mac)], 3)?;
@@ -514,7 +584,7 @@ fn operate(
         Operation::Forget => {
             ctl(&["remove", &mac], 10)?;
         }
-        Operation::Refresh => {}
+        Operation::Refresh | Operation::PowerOff => {}
     }
     let devices = if matches!(op, Operation::Scan) {
         inventory()?
@@ -678,6 +748,103 @@ mod tests {
         assert_eq!(bt.status, "Pairing failed");
         finish(&mut bt, Operation::Refresh, Err("Radio unavailable".into()));
         assert_eq!(bt.active, None);
+    }
+
+    #[test]
+    fn radio_off_preserves_pairing_and_selection_and_scan_clears_the_preference() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bt = Bluetooth::boot(root.path());
+        bt.selected = Some(MAC);
+        finish(
+            &mut bt,
+            Operation::Connect,
+            Ok(ResultState {
+                devices: vec![device(true)],
+                message: "Connected".into(),
+                forgotten: false,
+            }),
+        );
+        finish(
+            &mut bt,
+            Operation::PowerOff,
+            Ok(ResultState {
+                devices: vec![device(false)],
+                message: "Bluetooth off".into(),
+                forgotten: false,
+            }),
+        );
+        assert_eq!(bt.active, None);
+        assert_eq!(bt.selected, Some(MAC));
+        assert!(bt.devices[0].paired);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("Config/bluetooth.txt")).unwrap(),
+            format_address(MAC)
+        );
+        let rebooted = Bluetooth::boot(root.path());
+        assert_eq!(rebooted.selected, Some(MAC));
+        assert_eq!(rebooted.active, None);
+        #[cfg(feature = "host")]
+        assert_eq!(rebooted.status, "Bluetooth off");
+        finish(
+            &mut bt,
+            Operation::Scan,
+            Ok(ResultState {
+                devices: vec![device(false)],
+                message: "Choose headphones, then Connect".into(),
+                forgotten: false,
+            }),
+        );
+        assert!(!root.path().join("Config/bluetooth-off.txt").exists());
+    }
+
+    #[cfg(feature = "host")]
+    #[test]
+    fn off_requested_during_connect_discards_the_connection_result() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bt = Bluetooth::boot(root.path());
+        bt.selected = Some(MAC);
+        let (tx, rx) = mpsc::channel();
+        bt.pending = Some((Operation::Connect, Some(MAC), rx));
+        bt.request(Operation::PowerOff);
+        assert!(bt.off_requested);
+        tx.send(Ok(ResultState {
+            devices: vec![device(true)],
+            message: "Connected".into(),
+            forgotten: false,
+        }))
+        .unwrap();
+        bt.poll();
+        assert_eq!(bt.active, None);
+        assert!(bt.devices.is_empty());
+        assert!(!root.path().join("Config/bluetooth.txt").exists());
+        assert_eq!(bt.status, "Turn off in computer settings");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn power_off_runs_only_the_shutdown_helper_and_reports_its_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("System");
+        std::fs::create_dir(&folder).unwrap();
+        let script = folder.join("bluetooth.sh");
+        std::fs::write(
+            &script,
+            "[ \"$1\" = off ] || exit 1\nprintf 'Bluetooth off\\n'\n",
+        )
+        .unwrap();
+        let result = operate(root.path(), Operation::PowerOff, None, vec![device(true)]).unwrap();
+        assert!(!result.devices[0].connected);
+        assert!(result.devices[0].paired);
+        assert_eq!(result.message, "Bluetooth off");
+        std::fs::write(
+            &script,
+            "echo 'Could not turn Bluetooth radio off'\nexit 1\n",
+        )
+        .unwrap();
+        assert!(operate(root.path(), Operation::PowerOff, None, vec![])
+            .err()
+            .unwrap()
+            .contains("Could not turn Bluetooth radio off"));
     }
 
     #[test]

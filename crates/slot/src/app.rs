@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use slot_gfx::{OUT_H, OUT_W};
 use slot_input::{
@@ -17,9 +18,9 @@ use slot_ui::{
     board_from, board_zoom, draw_backdrop, draw_empty_slot, draw_footer, draw_slot_name,
     draw_sticker, ease, grown, lid_at, lid_from, lift_of, on_board, shelf_cart_at, ClockPicker,
     Draw, FfState, GbShell, Hud, HudKind, Icon, LinkBadge, Millis, Placed, Polaroids, PowerChoice,
-    QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal, Shelf, SlotChrome, TexId, Toast,
-    BOARD_W, BOARD_X, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, HINT_EDGE, HINT_H, HOP_LIFT,
-    SHADOW_H, SHADOW_W, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
+    PsxTextures, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, Refusal, Shelf, SlotChrome,
+    TexId, Toast, BOARD_W, BOARD_X, CART_W, CHIP_H, CHIP_U, CHIP_V, CHIP_W, HINT_EDGE, HINT_H,
+    HOP_LIFT, SHADOW_H, SHADOW_W, SOCKET_H, SOCKET_U, SOCKET_V, SOCKET_W, TURN_PAD,
 };
 
 use crate::audio::Sfx;
@@ -50,6 +51,16 @@ const INSERT_HOLD_S: f32 = 0.28;
 pub const SEATED_AT: f32 = INSERT_S - INSERT_HOLD_S;
 
 pub const EJECT_S: f32 = SEATED_AT;
+
+pub const PSX_SEATED_AT: f32 = 1.5;
+
+fn seated_at(platform: Platform) -> f32 {
+    if platform == Platform::Psx {
+        PSX_SEATED_AT
+    } else {
+        SEATED_AT
+    }
+}
 
 const EJECT_HOLD_S: f32 = 0.35;
 
@@ -109,6 +120,7 @@ pub enum PendingUndo {
     SaveSlot {
         slot: usize,
         prior: Option<Vec<u8>>,
+        prior_modified: Option<SystemTime>,
     },
     Save {
         stamp: String,
@@ -300,6 +312,7 @@ pub struct App {
     refusal: Option<Refusal>,
     refused_from: Option<f32>,
     alert_face: Option<TexId>,
+    psx_textures: Option<PsxTextures>,
     shutdown_faces: Vec<(TexId, u32, u32)>,
     power_menu: Option<usize>,
     power_menu_faces: Vec<(TexId, u32, u32)>,
@@ -315,10 +328,11 @@ pub struct App {
     game_menu: Option<GameMenu>,
     disc_menu: Option<usize>,
     state_menu: Option<usize>,
+    game_reset_requested: bool,
     playback: Option<Playback>,
     players_open: bool,
     state_slot_menu: Option<(StateSlotMode, usize)>,
-    state_slot_occupied: [bool; SAVE_SLOTS],
+    state_slot_metadata: [Option<std::fs::Metadata>; SAVE_SLOTS],
     state_slot_faces: Vec<(TexId, u32, u32)>,
     state_slot_undo_face: Option<(TexId, u32, u32)>,
     state_faces: Vec<(TexId, u32, u32)>,
@@ -387,6 +401,7 @@ pub struct App {
     game_ready: bool,
     clock: f64,
     power: Option<Power>,
+    screen_off: bool,
     dozed_at: Millis,
     docked: bool,
     hdmi_audio: bool,
@@ -456,6 +471,7 @@ impl App {
             refusal: None,
             refused_from: None,
             alert_face: None,
+            psx_textures: None,
             shutdown_faces: Vec::new(),
             power_menu: None,
             power_menu_faces: Vec::new(),
@@ -471,10 +487,11 @@ impl App {
             game_menu: None,
             disc_menu: None,
             state_menu: None,
+            game_reset_requested: false,
             playback: None,
             players_open: false,
             state_slot_menu: None,
-            state_slot_occupied: [false; SAVE_SLOTS],
+            state_slot_metadata: std::array::from_fn(|_| None),
             state_slot_faces: Vec::new(),
             state_slot_undo_face: None,
             state_faces: Vec::new(),
@@ -543,6 +560,7 @@ impl App {
             game_ready: false,
             clock: 0.0,
             power: None,
+            screen_off: false,
             dozed_at: 0,
             docked: false,
             hdmi_audio: false,
@@ -578,7 +596,10 @@ impl App {
         app.state = read_slot_state(root);
         app.controller_config = slot_store::read_controller_config(root);
         app.sync_shelf_settings();
-        if std::env::args_os().any(|arg| arg == "--return-device-info") {
+        let args: Vec<_> = std::env::args_os().collect();
+        if let Some((cart, platform)) = crate::system_app::reset_target(&args) {
+            app.start_game_clean(&cart, platform);
+        } else if args.iter().any(|arg| arg == "--return-device-info") {
             // Skip automatic cartridge resume after the system app exits.
             app.return_to_device_info_menu();
         } else if app.state.clock_set {
@@ -587,6 +608,18 @@ impl App {
             app.phase = clock_screen(system_secs(), 0, false);
         }
         app
+    }
+
+    /// Start the selected cartridge without restoring a potentially broken state.
+    pub fn start_game_clean(&mut self, cart: &str, platform: Platform) {
+        self.phase = Phase::Shelf;
+        let Some((at, i)) = self.seat_of(cart, Some(platform)) else {
+            return;
+        };
+        self.shelf_at = at;
+        self.shelf_kind = ShelfKind::Console(platform);
+        self.shelf_mut().select(i);
+        self.insert(true);
     }
 
     fn start(&mut self) {
@@ -604,9 +637,10 @@ impl App {
                 self.shelf_kind = ShelfKind::Console(self.shelves[at].0);
                 self.shelf_mut().select(i);
                 self.insert(false);
+                let insert_s = seated_at(self.shelves[self.shelf_at].0) + INSERT_HOLD_S;
                 if let Phase::Inserting { resumed, t, .. } = &mut self.phase {
                     *resumed = true;
-                    *t = INSERT_S;
+                    *t = insert_s;
                 }
             }
             None => {
@@ -818,6 +852,7 @@ impl App {
             | QuickRow::BluetoothConnect
             | QuickRow::BluetoothDisconnect
             | QuickRow::BluetoothForget
+            | QuickRow::BluetoothOff
             | QuickRow::BluetoothStatus => None,
             QuickRow::MusicPlay => Some(if self.music.snapshot.playing {
                 QuickValue::Playing
@@ -893,11 +928,14 @@ impl App {
             }),
             QuickRow::GbaShader => Some(shader_value(self.state.shader_gba)),
             QuickRow::GbShader => Some(shader_value(self.state.shader_gb)),
+            QuickRow::SnesShader => Some(shader_value(self.state.shader_snes)),
+            QuickRow::PsxShader => Some(shader_value(self.state.shader_psx)),
             QuickRow::Rumble => Some(QuickValue::flag(self.state.rumble)),
             QuickRow::EjectSave => Some(QuickValue::flag(self.state.eject_save)),
             QuickRow::Turbo => Some(QuickValue::flag(self.state.turbo)),
             QuickRow::Rewind => Some(QuickValue::flag(self.state.rewind)),
             QuickRow::DateTime
+            | QuickRow::ScreenOff
             | QuickRow::DeviceInfo
             | QuickRow::About
             | QuickRow::Screen
@@ -1470,6 +1508,9 @@ impl App {
 
     pub fn set_power(&mut self, mut power: Power) {
         power.set_backlight(self.state.brightness);
+        if self.screen_off {
+            power.set_screen_off(true);
+        }
         if self.lid_closed || matches!(self.phase, Phase::Doze { .. }) {
             power.on_close();
         }
@@ -1507,7 +1548,8 @@ impl App {
         match self.platform {
             Platform::Gba => self.state.shader_gba,
             Platform::Gb | Platform::Gbc => self.state.shader_gb,
-            Platform::Psx | Platform::Snes => Shader::Off,
+            Platform::Psx => self.state.shader_psx,
+            Platform::Snes => self.state.shader_snes,
         }
     }
 
@@ -1562,6 +1604,17 @@ impl App {
         self.state_menu
     }
 
+    pub fn take_game_reset_request(&mut self) -> Option<crate::system_app::GameReset> {
+        if !std::mem::take(&mut self.game_reset_requested) {
+            return None;
+        }
+        Some(crate::system_app::GameReset {
+            root: self.root.clone()?,
+            cart: self.seated()?.to_string(),
+            platform: self.platform,
+        })
+    }
+
     pub fn playback(&self) -> Option<Playback> {
         self.playback
     }
@@ -1584,15 +1637,28 @@ impl App {
             return Vec::new();
         };
         let mut labels: Vec<_> = self
-            .state_slot_occupied
+            .state_slot_metadata
             .iter()
             .enumerate()
-            .map(|(slot, saved)| {
-                format!(
-                    "Slot {}: {}",
-                    slot + 1,
-                    if *saved { "Saved" } else { "Empty" }
-                )
+            .map(|(slot, metadata)| {
+                let status = match metadata {
+                    None => "Empty".into(),
+                    Some(metadata) => metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                        .and_then(|secs| {
+                            secs.checked_add(i64::from(self.state.utc_offset_min) * 60)
+                        })
+                        .map(|secs| {
+                            let (year, month, day) =
+                                slot_store::civil_from_days(secs.div_euclid(86_400));
+                            format!("{year:04}-{month:02}-{day:02} {}", slot_ui::hhmm(secs))
+                        })
+                        .unwrap_or_else(|| "Date Unknown".into()),
+                };
+                format!("Slot {}: {status}", slot + 1)
             })
             .collect();
         if mode == StateSlotMode::Load {
@@ -1741,6 +1807,16 @@ impl App {
             Action::LidOpen => return self.open_lid(),
             _ => {}
         }
+        if self.screen_off {
+            if !matches!(
+                action,
+                Action::GbaUp(_) | Action::FfStop | Action::RewindStop | Action::PowerOff
+            ) {
+                self.restore_screen();
+                self.woke_on_press = action == Action::PowerPress;
+            }
+            return;
+        }
         if self.power_menu.is_some() {
             return self.power_menu_input(action);
         }
@@ -1783,24 +1859,21 @@ impl App {
         if self.adjust(action) {
             return;
         }
-        if matches!(self.phase, Phase::Shelf) && self.core_picker.is_none() {
-            if action == Action::GbaDown(Btn::Y) && self.music.show_playing() {
-                self.shelf_kind = ShelfKind::Music;
-                return;
-            }
-            if self.shelf_kind == ShelfKind::Music {
-                match action {
-                    Action::QuickMenu => self.open_quick_menu(),
-                    Action::GbaDown(Btn::L1) if !self.music.flipped && !self.music.fullscreen => {
-                        self.switch_shelf(-1)
-                    }
-                    Action::GbaDown(Btn::R1) if !self.music.flipped && !self.music.fullscreen => {
-                        self.switch_shelf(1)
-                    }
-                    _ => self.music.input(action, self.now()),
+        if matches!(self.phase, Phase::Shelf)
+            && self.core_picker.is_none()
+            && self.shelf_kind == ShelfKind::Music
+        {
+            match action {
+                Action::QuickMenu => self.open_quick_menu(),
+                Action::GbaDown(Btn::L1) if !self.music.flipped && !self.music.fullscreen => {
+                    self.switch_shelf(-1)
                 }
-                return;
+                Action::GbaDown(Btn::R1) if !self.music.flipped && !self.music.fullscreen => {
+                    self.switch_shelf(1)
+                }
+                _ => self.music.input(action, self.now()),
             }
+            return;
         }
         match action {
             Action::GbaUp(Btn::Left) => self.shelf_mut().release_left(),
@@ -1904,6 +1977,11 @@ impl App {
                     }
                 }
                 Action::GbaDown(Btn::A) if row == STATE_ROW_BACK => self.state_menu = None,
+                Action::GbaDown(Btn::A) if row == STATE_ROW_RESET => {
+                    // Never ask the stalled core for another save before recovery.
+                    self.pending = None;
+                    self.game_reset_requested = true;
+                }
                 // The second tap of a double tap lands here, the first having opened this menu.
                 Action::GbaDown(Btn::A) | Action::Polaroids => {
                     self.open_polaroids();
@@ -2022,10 +2100,11 @@ impl App {
     }
 
     fn refresh_state_slots(&mut self) {
-        self.state_slot_occupied = std::array::from_fn(|slot| {
+        self.state_slot_metadata = std::array::from_fn(|slot| {
             self.ring()
                 .and_then(|r| r.slot_path(slot).ok())
-                .is_some_and(|p| p.is_file())
+                .and_then(|path| path.metadata().ok())
+                .filter(|metadata| metadata.is_file())
         });
     }
 
@@ -2061,7 +2140,24 @@ impl App {
 
     fn open_quick_row(&mut self, row: QuickRow) {
         match row {
+            QuickRow::ScreenOff => {
+                self.phase = Phase::Shelf;
+                self.screen_off = true;
+                self.shelf_mut().release_hold();
+                self.play_held = None;
+                self.music.release();
+                if let Some(power) = &mut self.power {
+                    power.set_screen_off(true);
+                }
+            }
             QuickRow::BluetoothScan => self.bluetooth.request(crate::bluetooth::Operation::Scan),
+            QuickRow::BluetoothOff => {
+                if self.bluetooth_audio {
+                    self.music.commands.push(crate::music::Command::Pause);
+                }
+                self.bluetooth
+                    .request(crate::bluetooth::Operation::PowerOff);
+            }
             QuickRow::BluetoothConnect => {
                 self.bluetooth.request(crate::bluetooth::Operation::Connect)
             }
@@ -2073,6 +2169,9 @@ impl App {
             }
             QuickRow::BluetoothSelect | QuickRow::BluetoothStatus => {}
             QuickRow::Music => {
+                self.shelf_mut().release_hold();
+                self.play_held = None;
+                self.shelf_kind = ShelfKind::Music;
                 self.phase = Phase::QuickMenu {
                     row: QuickRow::MusicPlay,
                 }
@@ -2137,6 +2236,8 @@ impl App {
             | QuickRow::ColourCorrection
             | QuickRow::GbaShader
             | QuickRow::GbShader
+            | QuickRow::SnesShader
+            | QuickRow::PsxShader
             | QuickRow::GbPalettes
             | QuickRow::CoverFlow
             | QuickRow::HdmiOutput
@@ -2210,6 +2311,7 @@ impl App {
             | QuickRow::BluetoothConnect
             | QuickRow::BluetoothDisconnect
             | QuickRow::BluetoothForget
+            | QuickRow::BluetoothOff
             | QuickRow::BluetoothStatus => return,
             QuickRow::FastForward => {
                 let to = ff_next(s.ff_speed, right);
@@ -2224,19 +2326,21 @@ impl App {
                 self.colour_pending = Some(s.colour_correction);
             }
             QuickRow::GbaShader => {
-                let to = s.shader_gba.step(&Shader::GBA, right);
+                let to = s.shader_gba.step(&Shader::ALL, right);
                 if to == s.shader_gba {
                     return;
                 }
                 s.shader_gba = to;
             }
             QuickRow::GbShader => {
-                let to = s.shader_gb.step(&Shader::GB, right);
+                let to = s.shader_gb.step(&Shader::ALL, right);
                 if to == s.shader_gb {
                     return;
                 }
                 s.shader_gb = to;
             }
+            QuickRow::SnesShader => s.shader_snes = s.shader_snes.step(&Shader::ALL, right),
+            QuickRow::PsxShader => s.shader_psx = s.shader_psx.step(&Shader::ALL, right),
             QuickRow::Rumble => s.rumble = !s.rumble,
             QuickRow::EjectSave => s.eject_save = !s.eject_save,
             QuickRow::Turbo => s.turbo = !s.turbo,
@@ -2252,6 +2356,7 @@ impl App {
                 s.hdmi_margin = (s.hdmi_margin + if right { 5 } else { 10 }) % 15
             }
             QuickRow::DateTime
+            | QuickRow::ScreenOff
             | QuickRow::DeviceInfo
             | QuickRow::About
             | QuickRow::Screen
@@ -2296,12 +2401,13 @@ impl App {
         if !matches!(self.phase, Phase::Inserting { .. } | Phase::Playing { .. }) {
             return;
         }
-        let (shader, choices) = match self.platform {
-            Platform::Gba => (&mut self.state.shader_gba, &Shader::GBA[..]),
-            Platform::Gb | Platform::Gbc => (&mut self.state.shader_gb, &Shader::GB[..]),
-            Platform::Psx | Platform::Snes => return,
+        let shader = match self.platform {
+            Platform::Gba => &mut self.state.shader_gba,
+            Platform::Gb | Platform::Gbc => &mut self.state.shader_gb,
+            Platform::Psx => &mut self.state.shader_psx,
+            Platform::Snes => &mut self.state.shader_snes,
         };
-        *shader = shader.step(choices, right);
+        *shader = shader.step(&Shader::ALL, right);
         let said = match *shader {
             Shader::Off => Toast::ShaderOff,
             Shader::Lcd3x => Toast::ShaderLcd3x,
@@ -2437,6 +2543,17 @@ impl App {
         self.state.brightness
     }
 
+    pub fn screen_off(&self) -> bool {
+        self.screen_off
+    }
+
+    pub fn restore_screen(&mut self) {
+        self.screen_off = false;
+        if let Some(power) = &mut self.power {
+            power.set_screen_off(false);
+        }
+    }
+
     pub fn hdmi_scaling(&self) -> (slot_store::HdmiScale, u8) {
         (self.state.hdmi_scale, self.state.hdmi_margin)
     }
@@ -2486,6 +2603,7 @@ impl App {
 
     fn open_lid(&mut self) {
         self.lid_closed = false;
+        self.restore_screen();
         if self.lid_sleeping || !(self.docked && self.state.docked_lid) {
             self.wake();
         }
@@ -2499,6 +2617,7 @@ impl App {
 
     pub fn music_visible(&self) -> bool {
         matches!(self.phase, Phase::Shelf)
+            && !self.screen_off
             && self.shelf_kind == ShelfKind::Music
             && (!self.lid_closed || self.docked)
             && self.power_menu.is_none()
@@ -2510,10 +2629,11 @@ impl App {
         self.lid_closed
     }
     pub fn music_display_can_resume(&self) -> bool {
-        matches!(self.phase, Phase::Shelf)
-            || (self.lid_sleeping
-                && ((self.docked && self.state.docked_lid)
-                    || self.music.settings.keep_playing_closed))
+        self.shelf_kind == ShelfKind::Music
+            && (matches!(self.phase, Phase::Shelf)
+                || (self.lid_sleeping
+                    && ((self.docked && self.state.docked_lid)
+                        || self.music.settings.keep_playing_closed)))
     }
     pub fn sync_music_lid(&mut self) {
         self.sync_lid_policy();
@@ -2615,6 +2735,7 @@ impl App {
         }
         let mut touched = false;
         let at = self.shelf_at;
+        let seated_at = seated_at(self.shelves[self.shelf_at].0);
         let next = match &mut self.phase {
             Phase::Shelf => {
                 let shelf = &mut self.shelves[at].1;
@@ -2631,9 +2752,9 @@ impl App {
             } => {
                 let was = *t;
                 *t += dt;
-                let at = SEATED_AT - Sfx::Insert.lead();
+                let at = seated_at - Sfx::Insert.lead();
                 touched = !*resumed && was < at && *t >= at;
-                (*t >= INSERT_S && *core_ready).then(|| Phase::Playing {
+                (*t >= seated_at + INSERT_HOLD_S && *core_ready).then(|| Phase::Playing {
                     cart: std::mem::take(cart),
                 })
             }
@@ -2643,7 +2764,7 @@ impl App {
                     *t += dt;
                     touched = was < 0.0 && *t >= 0.0;
                 }
-                (*t >= EJECT_S).then_some(Phase::Shelf)
+                (*t >= seated_at).then_some(Phase::Shelf)
             }
             _ => None,
         };
@@ -2900,7 +3021,7 @@ impl App {
     }
 
     fn refuse_out(&mut self, cart: String, caught: f32) {
-        let t = (1.0 - caught) * EJECT_S;
+        let t = (1.0 - caught) * seated_at(self.shelves[self.shelf_at].0);
         self.phase = Phase::Ejecting { cart, t };
         self.refused_from = Some(t);
     }
@@ -2920,15 +3041,27 @@ impl App {
                 if *resumed {
                     1.0
                 } else {
-                    (t / SEATED_AT).clamp(0.0, 1.0)
+                    (t / seated_at(self.shelves[self.shelf_at].0)).clamp(0.0, 1.0)
                 }
             }
-            Phase::Ejecting { t, .. } => 1.0 - (t / EJECT_S).clamp(0.0, 1.0),
+            Phase::Ejecting { t, .. } => {
+                1.0 - (t / seated_at(self.shelves[self.shelf_at].0)).clamp(0.0, 1.0)
+            }
             _ => 1.0,
         }
     }
 
     pub fn draw(&self, out: &mut Vec<Draw>) {
+        if self.screen_off {
+            out.push(Draw::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: OUT_W as f32,
+                h: OUT_H as f32,
+                colour: [0.0, 0.0, 0.0, 1.0],
+            });
+            return;
+        }
         if let Some(index) = self.power_menu {
             self.draw_power_menu(index, out);
             return;
@@ -2990,8 +3123,10 @@ impl App {
                 self.state_faces.as_slice(),
                 self.run_ahead_faces.get(usize::from(self.run_ahead)),
             ) {
-                ([save, load, back, players, rewind, fast], Some(run_ahead)) => {
-                    vec![*save, *load, *run_ahead, *players, *rewind, *fast, *back]
+                ([save, load, back, players, rewind, fast, reset], Some(run_ahead)) => {
+                    vec![
+                        *save, *load, *run_ahead, *players, *rewind, *fast, *reset, *back,
+                    ]
                 }
                 _ => Vec::new(),
             };
@@ -3049,10 +3184,6 @@ impl App {
             }
             return;
         }
-        let shelf_music = matches!(self.phase, Phase::Shelf)
-            && self.shelf_kind != ShelfKind::Music
-            && self.core_picker.is_none()
-            && self.game_menu.is_none();
         match &self.phase {
             Phase::SetClock {
                 picker, from_menu, ..
@@ -3098,15 +3229,7 @@ impl App {
                         draw_empty_slot(out);
                     }
                     _ => {
-                        let top = if shelf_music
-                            && self.music.snapshot.album.is_some()
-                            && self.music.shelf_status.is_some()
-                        {
-                            crate::music_ui::SHELF_STATUS_BOTTOM
-                        } else {
-                            0.0
-                        };
-                        self.shelf().draw_below(self.shelf_shake(), top, out);
+                        self.shelf().draw(self.shelf_shake(), out);
                         draw_slot_name(self.shelf_platform, self.slot_name_alpha(), out);
                     }
                 }
@@ -3186,9 +3309,6 @@ impl App {
                 return;
             }
         }
-        if shelf_music {
-            self.music.draw_shelf_status(self.now(), out);
-        }
         if let Some(picker) = self.core_picker_shown() {
             self.draw_core_picker(&picker, out);
         }
@@ -3259,7 +3379,7 @@ impl App {
             screen: self.screen,
             game: self.game_ready,
         }
-        .draw_with_yaw(self.shelf().selected_yaw(), out);
+        .draw_with_media(self.shelf().selected_yaw(), self.psx_textures, out);
     }
 
     pub fn alert_visible(&self) -> bool {
@@ -3270,7 +3390,7 @@ impl App {
         let (Some(from), Phase::Ejecting { t, .. }) = (self.refused_from, &self.phase) else {
             return 0.0;
         };
-        let span = EJECT_S - from;
+        let span = seated_at(self.shelves[self.shelf_at].0) - from;
         if span <= 0.0 {
             return 0.0;
         }
@@ -3280,6 +3400,10 @@ impl App {
 
     pub fn set_alert_face(&mut self, face: TexId) {
         self.alert_face = Some(face);
+    }
+
+    pub fn set_psx_textures(&mut self, parts: PsxTextures) {
+        self.psx_textures = Some(parts);
     }
 
     pub fn set_shutdown_faces(&mut self, faces: Vec<(TexId, u32, u32)>) {
@@ -3624,6 +3748,9 @@ impl App {
         if self.single_cart() {
             return self.refuse();
         }
+        let psx_seat = (self.shelves[self.shelf_at].0 == Platform::Psx
+            && matches!(self.phase, Phase::Inserting { .. }))
+        .then(|| self.seat());
         let cart = match &mut self.phase {
             Phase::Playing { cart } | Phase::Inserting { cart, .. } => std::mem::take(cart),
             _ => return,
@@ -3636,7 +3763,7 @@ impl App {
         self.refused_from = None;
         self.phase = Phase::Ejecting {
             cart,
-            t: -EJECT_HOLD_S,
+            t: psx_seat.map_or(-EJECT_HOLD_S, |seat| (1.0 - seat) * PSX_SEATED_AT),
         };
     }
 
@@ -3698,7 +3825,9 @@ impl App {
         self.radio.ask(RadioJob::Cool);
         if let Some(power) = &mut self.power {
             power.on_close();
+            power.set_screen_off(false);
         }
+        self.screen_off = false;
     }
 
     fn wake(&mut self) {
@@ -4530,12 +4659,24 @@ impl App {
                 return false;
             }
         };
+        let prior_modified = ring
+            .slot_path(slot)
+            .and_then(std::fs::metadata)
+            .and_then(|metadata| metadata.modified())
+            .ok();
         if let Err(e) = ring.write_slot(slot, &state) {
             eprintln!("slot: save slot: {e}");
             self.refuse();
             return false;
         }
-        self.pending = Some((PendingUndo::SaveSlot { slot, prior }, self.now()));
+        self.pending = Some((
+            PendingUndo::SaveSlot {
+                slot,
+                prior,
+                prior_modified,
+            },
+            self.now(),
+        ));
         self.hud.toast(Toast::StateSaved, self.now());
         true
     }
@@ -4609,10 +4750,22 @@ impl App {
             return;
         };
         match what {
-            PendingUndo::SaveSlot { slot, prior } => {
+            PendingUndo::SaveSlot {
+                slot,
+                prior,
+                prior_modified,
+            } => {
                 if let Some(ring) = self.ring() {
                     let result = match prior {
-                        Some(state) => ring.write_slot(slot, &state),
+                        Some(state) => ring.write_slot(slot, &state).and_then(|()| {
+                            if let Some(modified) = prior_modified {
+                                std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .open(ring.slot_path(slot)?)?
+                                    .set_modified(modified)?;
+                            }
+                            Ok(())
+                        }),
                         None => ring.remove_slot(slot),
                     };
                     if let Err(e) = result {
@@ -4766,12 +4919,13 @@ fn free_stamp(ring: &StateRing, now: i64) -> String {
     stamp
 }
 
-const STATE_ROWS: usize = 7;
+const STATE_ROWS: usize = 8;
 const STATE_ROW_RUN_AHEAD: usize = 2;
 const STATE_ROW_PLAYERS: usize = 3;
 const STATE_ROW_REWIND: usize = 4;
 const STATE_ROW_FAST_FORWARD: usize = 5;
-const STATE_ROW_BACK: usize = 6;
+const STATE_ROW_RESET: usize = 6;
+const STATE_ROW_BACK: usize = 7;
 
 fn centred_top(rows: usize) -> f32 {
     (OUT_H as f32 - POWER_MENU_PITCH * rows as f32) / 2.0

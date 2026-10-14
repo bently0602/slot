@@ -12,9 +12,6 @@ use crate::music::{Analysis, Command, Snapshot};
 
 pub const PANEL_W: u32 = 560;
 pub const PANEL_H: u32 = 356;
-pub const SHELF_STATUS_W: u32 = 520;
-pub const SHELF_STATUS_H: u32 = 48;
-pub const SHELF_STATUS_BOTTOM: f32 = 24.0 + SHELF_STATUS_H as f32 + 8.0;
 const COVER: f32 = 280.0;
 
 #[derive(Default)]
@@ -39,7 +36,6 @@ pub struct Browser {
     pub panel: Option<TexId>,
     pub heading: Option<TexId>,
     pub footer: Option<TexId>,
-    pub shelf_status: Option<TexId>,
     pub notice: Option<TexId>,
     pub notice_until: u64,
 }
@@ -344,20 +340,6 @@ impl Browser {
         }
         self.draw_notice(now, out);
     }
-    pub fn draw_shelf_status(&self, now: u64, out: &mut Vec<Draw>) {
-        if self.snapshot.album.is_some() {
-            if let Some(tex) = self.shelf_status {
-                out.push(texture(
-                    tex,
-                    (slot_gfx::OUT_W - SHELF_STATUS_W) as f32 / 2.0,
-                    24.0,
-                    SHELF_STATUS_W as f32,
-                    SHELF_STATUS_H as f32,
-                ));
-            }
-        }
-        self.draw_notice(now, out);
-    }
     fn draw_notice(&self, now: u64, out: &mut Vec<Draw>) {
         if now < self.notice_until {
             out.push(rect(80.0, 25.0, 560.0, 44.0, [0.12, 0.025, 0.025, 0.98]));
@@ -647,70 +629,6 @@ fn label_face(title: &str, subtitle: &str, w: u32, h: u32) -> Vec<u8> {
     rgba
 }
 
-/// Compact now-playing label for console shelves, with room for font descenders.
-pub fn shelf_status_face(browser: &Browser) -> Vec<u8> {
-    let mut rgba = vec![0; (SHELF_STATUS_W * SHELF_STATUS_H * 4) as usize];
-    let Some(font) = slot_ui::text::label_font() else {
-        return rgba;
-    };
-    let mut title = browser
-        .snapshot
-        .title()
-        .unwrap_or("Music")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_uppercase();
-    let width = |label: &str| slot_ui::text::line_width(font, label, 16.0, 2.0);
-    let max_width = (SHELF_STATUS_W - 40) as f32;
-    if width(&title) > max_width {
-        while !title.is_empty() && width(&format!("{}…", title.trim_end())) > max_width {
-            title.pop();
-        }
-        title = format!("{}…", title.trim_end());
-    }
-    let title_width = width(&title).ceil() as u32;
-    let icon_x = (SHELF_STATUS_W - title_width - 20) / 2;
-    let colour = if browser.snapshot.playing {
-        [110, 225, 132, 255]
-    } else {
-        [162, 186, 165, 255]
-    };
-    if browser.snapshot.playing {
-        for row in 0..13 {
-            let width = 13 - (row as i32 - 6).unsigned_abs() * 2;
-            fill(&mut rgba, SHELF_STATUS_W, icon_x, 7 + row, width, 1, colour);
-        }
-    } else {
-        fill(&mut rgba, SHELF_STATUS_W, icon_x, 7, 4, 13, colour);
-        fill(&mut rgba, SHELF_STATUS_W, icon_x + 8, 7, 4, 13, colour);
-    }
-    text(
-        &mut rgba,
-        SHELF_STATUS_W,
-        SHELF_STATUS_H,
-        icon_x + 20,
-        0,
-        title_width,
-        26,
-        &title,
-        16.0,
-        [232, 236, 223],
-    );
-    text(
-        &mut rgba,
-        SHELF_STATUS_W,
-        SHELF_STATUS_H,
-        0,
-        26,
-        SHELF_STATUS_W,
-        22,
-        "Y · Now Playing",
-        12.0,
-        [162, 186, 165],
-    );
-    rgba
-}
 fn placeholder(album: &Album) -> Vec<u8> {
     let mut rgba = vec![0; 280 * 280 * 4];
     fill(&mut rgba, 280, 0, 0, 280, 280, [36, 58, 46, 255]);
@@ -813,12 +731,10 @@ pub struct Faces {
     panel: Option<TexId>,
     heading: Option<TexId>,
     footer: Option<TexId>,
-    shelf_status: Option<TexId>,
     notice: Option<TexId>,
     panel_key: String,
     heading_key: String,
     footer_key: String,
-    shelf_status_key: String,
     error_id: u64,
     library_key: u64,
 }
@@ -849,12 +765,10 @@ impl Faces {
             panel: None,
             heading: None,
             footer: None,
-            shelf_status: None,
             notice: None,
             panel_key: String::new(),
             heading_key: String::new(),
             footer_key: String::new(),
-            shelf_status_key: String::new(),
             error_id: 0,
             library_key: 0,
         }
@@ -990,16 +904,12 @@ impl Faces {
                 )
             },
         );
-        let hint = if visible {
-            if browser.fullscreen {
-                "Left/Right Style  B Back  Start Pause  L/R Tracks"
-            } else if browser.flipped {
-                "A Play  B Covers  Start Pause  X Visualizer  L2/R2 Seek"
-            } else {
-                "A Tracks  Start Play/Pause  X Visualizer  L/R Shelves"
-            }
+        let hint = if browser.fullscreen {
+            "Left/Right Style  B Back  Start Pause  L/R Tracks"
+        } else if browser.flipped {
+            "A Play  B Covers  Start Pause  X Visualizer  L2/R2 Seek"
         } else {
-            "Y Now Playing"
+            "A Tracks  Start Play/Pause  X Visualizer  L/R Shelves"
         };
         let key = format!("{title}\n{hint}");
         if self.footer.is_none() || key != self.footer_key {
@@ -1013,24 +923,6 @@ impl Faces {
             self.footer_key = key;
         }
         browser.footer = self.footer;
-        if !visible {
-            if let Some(title) = browser.snapshot.title() {
-                let key = format!("{}|{title}", browser.snapshot.playing);
-                if self.shelf_status.is_none() || key != self.shelf_status_key {
-                    upload(
-                        compositor,
-                        &mut self.shelf_status,
-                        SHELF_STATUS_W,
-                        SHELF_STATUS_H,
-                        &shelf_status_face(browser),
-                    );
-                    self.shelf_status_key = key;
-                }
-                browser.shelf_status = self.shelf_status;
-            } else {
-                browser.shelf_status = None;
-            }
-        }
         if browser.snapshot.error_id != self.error_id {
             self.error_id = browser.snapshot.error_id;
             browser.notice_until = now + 5000;

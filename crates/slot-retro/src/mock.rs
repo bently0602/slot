@@ -116,6 +116,12 @@ impl RetroCore for MockCore {
         self.sram.clone()
     }
 
+    fn run_ahead_instance(&self) -> Result<Box<dyn RetroCore>, CoreError> {
+        let mut core = Self::new();
+        core.sram = self.sram.clone();
+        Ok(Box::new(core))
+    }
+
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError> {
         match &mut self.sram {
             Some(s) if s.len() == data.len() => {

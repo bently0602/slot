@@ -23,7 +23,7 @@ fn a_menu_tap_while_playing_opens_the_state_menu_and_holds_the_game() {
     assert!(a.game_menu_open(), "the game is held behind the menu");
     assert!(matches!(a.phase(), Phase::Playing { .. }));
     a.apply(Action::GbaDown(Btn::Up));
-    assert_eq!(a.state_menu_row(), Some(6));
+    assert_eq!(a.state_menu_row(), Some(7));
     a.apply(Action::GbaDown(Btn::Down));
     a.apply(Action::GbaDown(Btn::Down));
     assert_eq!(a.state_menu_row(), Some(1));
@@ -87,13 +87,13 @@ fn playback_can_be_cancelled_without_an_a_release_and_never_resumes_after_sleep(
 }
 
 #[test]
-fn seven_menu_rows_fit_on_the_screen_and_playback_shows_the_game() {
+fn eight_menu_rows_fit_on_the_screen_and_playback_shows_the_game() {
     use slot_ui::{Draw, TexId, OUT_H};
     let d = tmp_root_with_carts(&["Emerald"]);
     let mut a = app_playing_in(d.path(), "Emerald");
     a.set_game_ready(true);
     a.set_state_menu_faces(
-        (10..16).map(|id| (TexId::from_raw(id), 400, 36)).collect(),
+        (10..17).map(|id| (TexId::from_raw(id), 400, 36)).collect(),
         (20..23).map(|id| (TexId::from_raw(id), 400, 36)).collect(),
     );
     a.apply(Action::QuickMenu);
@@ -109,7 +109,7 @@ fn seven_menu_rows_fit_on_the_screen_and_playback_shows_the_game() {
             _ => None,
         })
         .collect();
-    assert_eq!(rows, [10, 11, 20, 13, 14, 15, 12].map(TexId::from_raw));
+    assert_eq!(rows, [10, 11, 20, 13, 14, 15, 16, 12].map(TexId::from_raw));
     for _ in 0..4 {
         a.apply(Action::GbaDown(Btn::Down));
     }
@@ -137,6 +137,7 @@ fn save_state_opens_four_slots_and_replaces_only_the_chosen_slot() {
         assert_eq!(a.state_menu_row(), None);
         assert!(!a.game_menu_open());
         assert_eq!(ring.read_slot(slot).unwrap().unwrap(), vec![9; 1024]);
+        set_slot_time(&ring, slot, &format!("2026-10-14_14-3{slot}-00"));
     }
     assert_eq!(states(d.path()), 0, "manual slots leaked into the history");
     a.apply(Action::QuickMenu);
@@ -144,10 +145,10 @@ fn save_state_opens_four_slots_and_replaces_only_the_chosen_slot() {
     assert_eq!(
         a.state_slot_labels(),
         [
-            "Slot 1: Saved",
-            "Slot 2: Saved",
-            "Slot 3: Saved",
-            "Slot 4: Saved",
+            "Slot 1: 2026-10-14 14:30",
+            "Slot 2: 2026-10-14 14:31",
+            "Slot 3: 2026-10-14 14:32",
+            "Slot 4: 2026-10-14 14:33",
             "Back"
         ]
     );
@@ -210,6 +211,72 @@ fn open_slots(a: &mut slot::app::App, mode: StateSlotMode, slot: usize) {
     }
 }
 
+fn set_slot_time(ring: &StateRing, slot: usize, stamp: &str) {
+    let seconds = slot_store::parse_stamp(stamp).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(ring.slot_path(slot).unwrap())
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds as u64))
+        .unwrap();
+}
+
+#[test]
+fn saved_slot_dates_use_the_device_offset_in_both_menus_and_fit_the_screen() {
+    for (stamp, offset, expected) in [
+        ("2026-01-01_00-15-00", -60, "Slot 1: 2025-12-31 23:15"),
+        ("2025-12-31_23-45-00", 60, "Slot 1: 2026-01-01 00:45"),
+        ("2026-10-14_08-05-00", 330, "Slot 1: 2026-10-14 13:35"),
+    ] {
+        let d = tmp_root_with_carts(&["Emerald"]);
+        let ring = StateRing::new(d.path(), Platform::Gba, Core::Mgba, "Emerald");
+        ring.write_slot(0, &[9; 1024]).unwrap();
+        set_slot_time(&ring, 0, stamp);
+        slot_store::write_slot_state(
+            d.path(),
+            &slot_store::SlotState {
+                cart: Some("Emerald".into()),
+                clock_set: true,
+                utc_offset_min: offset,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut a = slot::app::App::boot(d.path());
+        a.set_snapshot(common::StubSnapshot::boxed());
+        a.on_core_ready();
+        for _ in 0..120 {
+            a.update(1.0 / 60.0);
+        }
+        for mode in [StateSlotMode::Save, StateSlotMode::Load] {
+            open_slots(&mut a, mode, 0);
+            let labels = a.state_slot_labels();
+            assert_eq!(labels[0], expected);
+            assert_eq!(labels[1], "Slot 2: Empty");
+            let faces: Vec<_> = labels
+                .iter()
+                .enumerate()
+                .map(|(row, label)| {
+                    let face = slot_ui::menu_face(label);
+                    assert!(face.w > 0 && face.w <= slot_ui::OUT_W - 2 * slot_ui::MENU_PAD);
+                    (slot_ui::TexId::from_raw(row + 100), face.w, face.h)
+                })
+                .collect();
+            a.set_state_slot_faces(faces);
+            let mut draws = Vec::new();
+            a.draw(&mut draws);
+            for draw in draws {
+                if let slot_ui::Draw::Tex { x, y, w, h, .. } = draw {
+                    assert!(x >= 0.0 && x + w <= slot_ui::OUT_W as f32);
+                    assert!(y >= 0.0 && y + h <= slot_ui::OUT_H as f32);
+                }
+            }
+            a.apply(Action::GbaDown(Btn::B));
+            a.apply(Action::GbaDown(Btn::B));
+        }
+    }
+}
+
 #[test]
 fn loading_each_slot_restores_its_own_state_after_reboot() {
     let d = tmp_root_with_carts(&["Emerald"]);
@@ -244,9 +311,18 @@ fn overwriting_a_slot_and_undoing_it_preserves_the_other_three() {
         core.run_frame();
         open_slots(&mut a, StateSlotMode::Save, slot);
         a.apply(Action::GbaDown(Btn::A));
+        set_slot_time(&ring, slot, &format!("2024-01-01_0{slot}-00-00"));
     }
     let saved: Vec<_> = (0..4)
         .map(|slot| ring.read_slot(slot).unwrap().unwrap())
+        .collect();
+    let saved_times: Vec<_> = (0..4)
+        .map(|slot| {
+            std::fs::metadata(ring.slot_path(slot).unwrap())
+                .unwrap()
+                .modified()
+                .unwrap()
+        })
         .collect();
     core.run_frame();
     open_slots(&mut a, StateSlotMode::Save, 2);
@@ -256,8 +332,19 @@ fn overwriting_a_slot_and_undoing_it_preserves_the_other_three() {
         assert_eq!(ring.read_slot(slot).unwrap().unwrap(), saved[slot]);
     }
     open_slots(&mut a, StateSlotMode::Load, 2);
+    assert_ne!(a.state_slot_labels()[2], "Slot 3: 2024-01-01 02:00");
     a.apply(Action::GbaDown(Btn::X));
     assert_eq!(ring.read_slot(2).unwrap().unwrap(), saved[2]);
+    assert_eq!(a.state_slot_labels()[2], "Slot 3: 2024-01-01 02:00");
+    for (slot, expected_time) in saved_times.iter().enumerate() {
+        assert_eq!(
+            std::fs::metadata(ring.slot_path(slot).unwrap())
+                .unwrap()
+                .modified()
+                .unwrap(),
+            *expected_time
+        );
+    }
     assert_eq!(a.state_slot_menu(), Some((StateSlotMode::Load, 2)));
     assert!(!a.undo_available(0));
 }

@@ -2,6 +2,100 @@ use slot::app::{App, Phase};
 use slot_input::{Action, Btn};
 use slot_store::{Cart, Platform};
 
+fn animation_app() -> App {
+    let carts = ["Adventure", "Second"].map(|stem| Cart {
+        platform: Platform::Psx,
+        stem: stem.into(),
+        rom: format!("{stem}.chd").into(),
+        label: None,
+        title: stem.into(),
+        code: String::new(),
+        shell: None,
+    });
+    let mut app = App::new(carts.to_vec());
+    app.set_platform(Platform::Psx);
+    app
+}
+
+#[test]
+fn psx_waits_for_the_case_and_disc_animation_and_plays_the_insert_sound_at_seating() {
+    let mut app = animation_app();
+    app.apply(Action::Insert);
+    app.on_core_ready();
+    app.update(slot::app::INSERT_S);
+    assert!(matches!(app.phase(), Phase::Inserting { .. }));
+    assert!(
+        app.seat() < 0.54,
+        "disc should still be lifting out of the case"
+    );
+    assert_eq!(app.take_sfx(), None);
+    app.update(slot::app::PSX_SEATED_AT - slot::app::INSERT_S);
+    assert_eq!(app.seat(), 1.0);
+    assert_eq!(app.take_sfx(), Some(slot::audio::Sfx::Insert));
+    assert!(matches!(app.phase(), Phase::Inserting { .. }));
+    app.update(0.29);
+    assert!(matches!(app.phase(), Phase::Playing { .. }));
+    app.apply(Action::Eject);
+    for _ in 0..130 {
+        app.update(1.0 / 60.0);
+    }
+    assert!(matches!(app.phase(), Phase::Shelf));
+}
+
+#[test]
+fn a_failed_psx_launch_reverses_from_its_current_animation_pose() {
+    for progress in [0.15, 0.45, 0.8] {
+        let mut app = animation_app();
+        app.apply(Action::Insert);
+        app.update(slot::app::PSX_SEATED_AT * progress);
+        let seat = app.seat();
+        app.on_core_failed();
+        assert!((app.seat() - seat).abs() < 0.001);
+        app.update(slot::app::PSX_SEATED_AT * progress + 0.01);
+        assert!(matches!(app.phase(), Phase::Shelf));
+    }
+}
+
+#[test]
+fn a_seated_psx_game_resumes_without_waiting_for_the_case_animation() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("Config")).unwrap();
+    std::fs::create_dir_all(root.path().join("Games/PSX")).unwrap();
+    for stem in ["Adventure", "Second"] {
+        std::fs::write(root.path().join(format!("Games/PSX/{stem}.chd")), b"disc").unwrap();
+    }
+    slot_store::write_slot_state(
+        root.path(),
+        &slot_store::SlotState {
+            clock_set: true,
+            cart: Some("Adventure".into()),
+            cart_platform: Some(Platform::Psx),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut app = App::boot(root.path());
+    app.set_platform(Platform::Psx);
+    app.on_core_ready();
+    app.update(1.0 / 60.0);
+    assert!(matches!(app.phase(), Phase::Playing { .. }));
+    assert_eq!(app.take_sfx(), None);
+}
+
+#[test]
+fn ejecting_during_a_psx_launch_reverses_without_a_jump() {
+    let mut app = animation_app();
+    app.apply(Action::Insert);
+    app.update(0.6);
+    let seat = app.seat();
+    app.apply(Action::Eject);
+    assert!((app.seat() - seat).abs() < 0.001);
+    app.update(0.2);
+    assert!(app.seat() < seat);
+    app.update(0.41);
+    assert!(matches!(app.phase(), Phase::Shelf));
+}
+
 struct DigitalCore {
     mock: slot_retro::MockCore,
     inputs: std::sync::Arc<std::sync::Mutex<Vec<slot_retro::ButtonMask>>>,

@@ -218,6 +218,7 @@ struct Probe {
     cost: Duration,
     skip: bool,
     log: Arc<Mutex<Vec<bool>>>,
+    serialize_gate: Option<mpsc::Receiver<()>>,
 }
 
 impl Probe {
@@ -228,6 +229,7 @@ impl Probe {
             cost,
             skip: false,
             log: log.clone(),
+            serialize_gate: None,
         });
         (probe, log)
     }
@@ -255,6 +257,9 @@ impl RetroCore for Probe {
         self.inner.take_audio()
     }
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
+        if let Some(gate) = self.serialize_gate.take() {
+            let _ = gate.recv();
+        }
         self.inner.serialize()
     }
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
@@ -269,6 +274,36 @@ impl RetroCore for Probe {
     fn av_info(&self) -> AvInfo {
         self.inner.av_info()
     }
+}
+
+#[test]
+fn a_stuck_serialize_releases_the_frontend_after_three_seconds() {
+    let (release, gate) = mpsc::channel();
+    let (mut core, _) = Probe::new(Duration::ZERO);
+    core.serialize_gate = Some(gate);
+    let emu = EmuHandle::spawn(
+        core,
+        PathBuf::from("mock"),
+        StubSink::new().ring(),
+        None,
+        None,
+    );
+    assert!(wait_for(|| emu.state() == CoreState::Ready));
+    let began = Instant::now();
+    let state = emu.snapshot().state();
+    let waited = began.elapsed();
+    // Unblock the fixture before assertions so its destructor can safely join.
+    release.send(()).unwrap();
+    assert!(state.is_none());
+    assert!(waited >= Duration::from_secs(3));
+    assert!(
+        waited < Duration::from_secs(5),
+        "frontend blocked for {waited:?}"
+    );
+    assert!(
+        emu.snapshot().state().is_some(),
+        "a later request could not recover"
+    );
 }
 
 fn spawn_probe(cost: Duration) -> (EmuHandle, Arc<Mutex<Vec<bool>>>) {
@@ -1165,9 +1200,21 @@ struct TwoPorts {
     inner: MockCore,
     full: bool,
     seen: Arc<Mutex<Vec<(u16, u16)>>>,
+    restores: Arc<AtomicUsize>,
+    audio_probe: Option<(Arc<slot::audio::Ring>, mpsc::Sender<usize>)>,
 }
 
 impl RetroCore for TwoPorts {
+    fn run_ahead_instance(&self) -> Result<Box<dyn RetroCore>, CoreError> {
+        Ok(Box::new(Self {
+            inner: MockCore::new(),
+            full: self.full,
+            seen: self.seen.clone(),
+            restores: Arc::new(AtomicUsize::new(0)),
+            audio_probe: self.audio_probe.clone(),
+        }))
+    }
+
     fn full_joypad(&self) -> bool {
         self.full
     }
@@ -1192,6 +1239,10 @@ impl RetroCore for TwoPorts {
         self.inner.serialize()
     }
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        if let Some((ring, reply)) = &self.audio_probe {
+            let _ = reply.send(ring.queued_frames());
+        }
+        self.restores.fetch_add(1, Ordering::Relaxed);
         self.inner.unserialize(data)
     }
     fn save_ram(&self) -> Option<Vec<u8>> {
@@ -1214,6 +1265,8 @@ fn two_ports(full: bool, ahead: u8) -> Vec<(u16, u16)> {
         inner: MockCore::new(),
         full,
         seen: seen.clone(),
+        restores: Arc::new(AtomicUsize::new(0)),
+        audio_probe: None,
     };
     let emu = EmuHandle::spawn(
         Box::new(core),
@@ -1251,4 +1304,109 @@ fn a_handheld_core_never_sees_a_second_player() {
         seen.iter().all(|(_, second)| *second == 0),
         "a single-player core was handed player two: {seen:?}"
     );
+}
+
+#[test]
+fn run_ahead_never_restores_the_core_producing_audio() {
+    for ahead in [1, 2] {
+        let mut sink = StubSink::new();
+        sink.open(32_768).unwrap();
+        drain(sink.clone());
+        let restores = Arc::new(AtomicUsize::new(0));
+        let emu = EmuHandle::spawn(
+            Box::new(TwoPorts {
+                inner: MockCore::new(),
+                full: false,
+                seen: Arc::new(Mutex::new(Vec::new())),
+                restores: restores.clone(),
+                audio_probe: None,
+            }),
+            PathBuf::from("mock"),
+            sink.ring(),
+            None,
+            None,
+        );
+        emu.set_run_ahead(ahead);
+        emu.set_speed(Speed::Normal);
+        assert!(wait_for(|| emu.published_count() >= 12));
+        let (frames, _) = held_counts(&emu);
+        let shown = emu.latest_frame().unwrap()[2];
+        assert_eq!(shown, (frames + u64::from(ahead)) as u8);
+        assert_eq!(
+            restores.load(Ordering::Relaxed),
+            0,
+            "run ahead restored the audible core"
+        );
+    }
+}
+
+#[test]
+fn run_ahead_instance_failure_keeps_normal_playback_running() {
+    // This fixture does not implement independent instances. Run ahead must
+    // stand down instead of restoring states into its audible core.
+    let emu = spawn_with_core(Box::new(SpyLinkCore::default()));
+    emu.set_run_ahead(1);
+    assert!(wait_for(|| emu.published_count() >= 12));
+    let (frames, _) = held_counts(&emu);
+    assert_eq!(emu.latest_frame().unwrap()[2], frames as u8);
+    emu.set_speed(Speed::Normal);
+    assert!(wait_for(|| frame_count(&emu) > frames));
+}
+
+#[test]
+fn run_ahead_queues_primary_audio_before_restoring_the_speculative_core() {
+    for ahead in [1, 2] {
+        let sink = StubSink::new();
+        let (tx, rx) = mpsc::channel();
+        let emu = EmuHandle::spawn(
+            Box::new(TwoPorts {
+                inner: MockCore::new(),
+                full: false,
+                seen: Arc::new(Mutex::new(Vec::new())),
+                restores: Arc::new(AtomicUsize::new(0)),
+                audio_probe: Some((sink.ring(), tx)),
+            }),
+            PathBuf::from("mock"),
+            sink.ring(),
+            None,
+            None,
+        );
+        emu.set_run_ahead(ahead);
+        emu.set_speed(Speed::Normal);
+        let queued = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("no speculative restore");
+        emu.set_speed(Speed::Paused);
+        assert!(
+            queued > 0,
+            "available primary audio waited for speculative work"
+        );
+    }
+}
+
+#[test]
+fn run_ahead_thumbnails_match_the_displayed_speculative_picture() {
+    for ahead in [1, 2] {
+        let emu = spawn();
+        emu.set_run_ahead(ahead);
+        // Fast-forward retains the speculative instance but displays the primary.
+        for speed in [Speed::Normal, Speed::Fast, Speed::Normal] {
+            let before = emu.published_count();
+            emu.set_speed(speed);
+            assert!(wait_for(|| emu.published_count() > before + 3));
+            emu.set_speed(Speed::Paused);
+            assert!(wait_for(|| emu.observed_speed() == Speed::Paused));
+            let frame = emu.latest_frame().unwrap();
+            let png = emu.snapshot().thumb().expect("missing run-ahead thumbnail");
+            let mut reader = png::Decoder::new(png.as_slice()).read_info().unwrap();
+            let mut rgb = vec![0; reader.output_buffer_size()];
+            reader.next_frame(&mut rgb).unwrap();
+            for (index, pixel) in frame.chunks_exact(4).enumerate() {
+                assert_eq!(
+                    &rgb[index * 3..index * 3 + 3],
+                    &[pixel[2], pixel[1], pixel[0]]
+                );
+            }
+        }
+    }
 }

@@ -121,3 +121,30 @@ fn shelf_menu_opens_bluetooth_and_browsing_keeps_the_active_route() {
     press(&mut app, Btn::B);
     assert_eq!(app.quick_menu(), Some(QuickRow::Bluetooth));
 }
+
+#[test]
+fn turning_bluetooth_off_is_an_action_and_pauses_bluetooth_music() {
+    let root = common::tmp_root_with_carts(&[]);
+    common::clocked(root.path());
+    let mut app = App::boot(root.path());
+    app.set_bluetooth_audio(true);
+    app.apply(Action::QuickMenu);
+    for _ in 0..QuickRow::Bluetooth.position() {
+        app.apply(Action::GbaDown(Btn::Down));
+    }
+    app.apply(Action::GbaDown(Btn::A));
+    for _ in 0..QuickRow::BluetoothOff.position() {
+        app.apply(Action::GbaDown(Btn::Down));
+    }
+    assert_eq!(app.quick_menu(), Some(QuickRow::BluetoothOff));
+    assert!(app.quick_value(QuickRow::BluetoothOff).is_none());
+    app.apply(Action::GbaDown(Btn::A));
+    assert!(matches!(
+        app.music.commands.as_slice(),
+        [slot::music::Command::Pause]
+    ));
+    #[cfg(feature = "host")]
+    assert_eq!(app.bluetooth.status, "Turn off in computer settings");
+    app.apply(Action::GbaDown(Btn::B));
+    assert_eq!(app.quick_menu(), Some(QuickRow::Bluetooth));
+}

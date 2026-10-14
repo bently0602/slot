@@ -244,6 +244,11 @@ impl Frontend {
         let rounded = gb_cart_shadow(GbShell::Rounded);
         let rounded = compositor.create_texture(rounded.w, rounded.h, &rounded.rgba);
         self.session.app_mut().set_gb_cart_shadows(notched, rounded);
+        let [tray, lid, disc] =
+            slot_ui::psx_parts().map(|face| compositor.create_texture(face.w, face.h, &face.rgba));
+        self.session
+            .app_mut()
+            .set_psx_textures(slot_ui::PsxTextures { tray, lid, disc });
         let bolt = icon_face(Icon::Charging, BOLT_PX, HUD_INK);
         let bolt_id = compositor.create_texture(bolt.w, bolt.h, &bolt.rgba);
         self.session.app_mut().set_bolt_face(bolt_id);
@@ -430,6 +435,7 @@ impl Frontend {
                 "Players",
                 "Hold A: Rewind",
                 "Hold A: Fast Forward",
+                "Reset Game",
             ]
             .map(&mut upload);
             let run_ahead = [0, 1, 2].map(|frames| upload(crate::run_ahead::label(frames)));
@@ -741,6 +747,10 @@ impl Frontend {
 
     pub fn take_device_info_request(&mut self) -> Option<std::path::PathBuf> {
         self.session.app_mut().take_device_info_request()
+    }
+
+    pub fn take_game_reset_request(&mut self) -> Option<crate::system_app::GameReset> {
+        self.session.app_mut().take_game_reset_request()
     }
 
     pub fn restarting(&self) -> bool {

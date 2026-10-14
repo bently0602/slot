@@ -72,6 +72,24 @@ fn the_lid_restores_the_level_it_darkened() {
 }
 
 #[test]
+fn screen_off_preserves_brightness_and_respects_the_lid() {
+    let (mut p, step) = lit();
+    p.set_backlight(7);
+    p.set_screen_off(true);
+    assert_eq!(step.load(Ordering::Relaxed), 0);
+    p.set_backlight(9);
+    assert_eq!(step.load(Ordering::Relaxed), 0);
+    p.on_close();
+    p.on_open();
+    assert_eq!(step.load(Ordering::Relaxed), 0);
+    p.on_close();
+    p.set_screen_off(false);
+    assert_eq!(step.load(Ordering::Relaxed), 0);
+    p.on_open();
+    assert_eq!(step.load(Ordering::Relaxed), 9);
+}
+
+#[test]
 fn closing_twice_does_not_swallow_the_level() {
     let (mut p, step) = lit();
     p.set_backlight(4);

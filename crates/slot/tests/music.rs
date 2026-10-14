@@ -224,7 +224,7 @@ fn music_controls_do_not_insert_carts_and_game_start_remains_core_picker() {
 }
 
 #[test]
-fn session_browsing_sleep_and_lid_policy_preserve_music() {
+fn session_music_menus_sleep_and_lid_policy_preserve_music() {
     let d = library(&["stereo480.flac"]);
     let (mut s, sink) = session(&d);
     press(&mut s, Btn::Start, 100);
@@ -251,6 +251,192 @@ fn session_browsing_sleep_and_lid_policy_preserve_music() {
     s.update(0.016);
     assert!(s.app().music.snapshot.playing);
     drain(&sink.ring());
+}
+
+#[test]
+fn leaving_music_pauses_and_returning_waits_for_explicit_resume() {
+    for (leave, back) in [(Btn::L1, Btn::R1), (Btn::R1, Btn::L1)] {
+        let d = library(&["stereo480.flac"]);
+        for stem in ["Fake", "Other"] {
+            std::fs::write(d.path().join(format!("Games/GBA/{stem}.gba")), [0u8; 256]).unwrap();
+        }
+        let (mut s, sink) = session(&d);
+        press(&mut s, Btn::Start, 100);
+        wait(|| sink.ring().queued_frames() > 100);
+        s.app_mut().music.commands.push(Command::Seek(0.5));
+        s.update(0.016);
+        let track = s.app().music.snapshot.resume().unwrap().track;
+
+        press(&mut s, leave, 200);
+        assert!(matches!(s.app().shelf_kind, ShelfKind::Console(_)));
+        assert!(!s.app().music.snapshot.playing);
+        assert_eq!(sink.ring().queued_frames(), 0);
+        let paused = s.app().music.snapshot.resume().unwrap();
+        assert_eq!(paused.track, track);
+        assert!(paused.position >= 0.5);
+        assert_eq!(MusicSettings::read(d.path()).resume, Some(paused.clone()));
+
+        press(&mut s, back, 300);
+        assert_eq!(s.app().shelf_kind, ShelfKind::Music);
+        assert!(!s.app().music.snapshot.playing);
+        assert_eq!(s.app().music.snapshot.resume(), Some(paused));
+        press(&mut s, Btn::Start, 400);
+        assert!(s.app().music.snapshot.playing);
+        wait(|| sink.ring().queued_frames() > 100);
+    }
+}
+
+#[test]
+fn console_focus_blocks_queued_playback_commands() {
+    let d = library(&["mono441.mp3", "stereo480.flac"]);
+    let (mut s, sink) = session(&d);
+    let album = s.app().music.selected().unwrap().clone();
+    s.app_mut().music.commands.push(Command::Play {
+        album: album.clone(),
+        index: 0,
+        position: 0.5,
+        playing: false,
+    });
+    s.update(0.016);
+    let paused = s.app().music.snapshot.resume();
+    let queued = sink.ring().queued_frames();
+    s.app_mut().shelf_kind = ShelfKind::Console(slot_store::Platform::Gba);
+    for command in [
+        Command::Play {
+            album,
+            index: 1,
+            position: 0.0,
+            playing: true,
+        },
+        Command::Toggle,
+        Command::Previous,
+        Command::Next,
+    ] {
+        s.app_mut().music.commands.push(command);
+        s.update(0.016);
+        assert!(!s.app().music.snapshot.playing);
+        assert_eq!(s.app().music.snapshot.resume(), paused);
+        assert_eq!(sink.ring().queued_frames(), queued);
+        assert_eq!(sink.ring().sample_rate(), slot::audio::GBA_HZ);
+    }
+}
+
+#[test]
+fn wake_on_a_console_does_not_resume_music_later() {
+    let d = library(&["stereo480.flac"]);
+    let (mut s, sink) = session(&d);
+    press(&mut s, Btn::Start, 100);
+    wait(|| sink.ring().queued_frames() > 100);
+    s.app_mut().apply(Action::PowerTap);
+    s.update(0.016);
+    assert!(matches!(s.app().phase(), Phase::Doze { .. }));
+    assert!(!s.app().music.snapshot.playing);
+    s.app_mut().shelf_kind = ShelfKind::Console(slot_store::Platform::Gba);
+    s.app_mut().apply(Action::PowerTap);
+    s.update(0.016);
+    assert!(matches!(s.app().phase(), Phase::Shelf));
+    assert!(!s.app().music.snapshot.playing);
+    assert!(!s.app().music_display_can_resume());
+    s.app_mut().shelf_kind = ShelfKind::Music;
+    s.update(0.016);
+    assert!(!s.app().music.snapshot.playing);
+    assert_eq!(sink.ring().queued_frames(), 0);
+}
+
+#[test]
+fn music_menu_focuses_music_before_starting_playback() {
+    use slot_ui::QuickRow;
+
+    let d = library(&["stereo480.flac"]);
+    let (mut s, sink) = session(&d);
+    s.app_mut().shelf_kind = ShelfKind::Console(slot_store::Platform::Gba);
+    s.app_mut().apply(Action::QuickMenu);
+    for _ in 0..QuickRow::Music.position() {
+        s.app_mut().apply(Action::GbaDown(Btn::Down));
+    }
+    s.app_mut().apply(Action::GbaDown(Btn::A));
+    assert_eq!(s.app().quick_menu(), Some(QuickRow::MusicPlay));
+    assert_eq!(s.app().shelf_kind, ShelfKind::Music);
+    assert!(!s.app().music.snapshot.playing);
+    press(&mut s, Btn::A, 100);
+    assert!(s.app().music.snapshot.playing);
+    wait(|| sink.ring().queued_frames() > 100);
+    s.app_mut().apply(Action::QuickMenu);
+    s.app_mut().apply(Action::QuickMenu);
+    assert!(matches!(s.app().phase(), Phase::Shelf));
+    assert_eq!(s.app().shelf_kind, ShelfKind::Music);
+}
+
+#[test]
+fn loaded_music_does_not_change_console_artwork_or_add_a_shortcut() {
+    let d = common::tmp_root_with_gb_carts(&["Tetris", "Zelda"]);
+    common::clocked(d.path());
+    let mut app = App::boot(d.path());
+    let face = TexId::from_raw(9001);
+    app.set_faces(vec![face, TexId::from_raw(9002)]);
+    let mut before = Vec::new();
+    app.draw(&mut before);
+    assert!(before
+        .iter()
+        .any(|draw| matches!(draw, Draw::Tex { tex, y, h, .. }
+            if *tex == face && *y == slot_ui::rest_y(*h))));
+
+    let music = library(&["mono441.mp3"]);
+    let album = slot_store::music::scan(music.path()).remove(0);
+    app.music.replace(vec![album.clone()]);
+    app.music.snapshot.album = Some(Arc::new(album));
+    app.music.heading = Some(TexId::from_raw(9010));
+    app.music.footer = Some(TexId::from_raw(9011));
+    app.music.notice = Some(TexId::from_raw(9012));
+    app.music.notice_until = u64::MAX;
+    for playing in [true, false] {
+        app.music.snapshot.playing = playing;
+        let mut after = Vec::new();
+        app.draw(&mut after);
+        assert_eq!(before, after);
+        app.apply(Action::GbaDown(Btn::Y));
+        assert_eq!(app.shelf_kind, ShelfKind::Console(slot_store::Platform::Gb));
+        assert!(!app.music.flipped);
+    }
+}
+
+#[test]
+fn screen_off_keeps_music_playing_and_consumes_wake_buttons() {
+    use slot_ui::QuickRow;
+
+    let d = library(&["stereo480.flac"]);
+    let (mut s, sink) = session(&d);
+    press(&mut s, Btn::Start, 100);
+    wait(|| {
+        s.update(0.016);
+        sink.ring().queued_frames() > 100
+    });
+    let (power, backlight) = common::panel(d.path(), Duration::from_secs(180));
+    s.app_mut().set_power(power);
+    let brightness = s.app().brightness();
+    for button in [Btn::A, Btn::Power, Btn::Menu, Btn::Select, Btn::VolUp] {
+        s.app_mut().apply(Action::QuickMenu);
+        for _ in 0..QuickRow::ScreenOff.position() {
+            s.app_mut().apply(Action::GbaDown(Btn::Down));
+        }
+        press(&mut s, Btn::A, 200);
+        assert!(s.app().screen_off());
+        assert_eq!(backlight.load(Ordering::Relaxed), 0);
+        assert!(s.app().music.snapshot.playing);
+        assert!(!s.app().music_visible());
+        let volume = s.app().volume();
+        s.feed([RawEvent::Down(button)], 300);
+        assert!(!s.app().screen_off());
+        s.feed([], 300 + slot_input::POWER_HOLD_MS + 1);
+        s.feed([RawEvent::Up(button)], 1400);
+        s.feed([], 2000);
+        s.update(0.016);
+        assert!(matches!(s.app().phase(), Phase::Shelf));
+        assert!(s.app().music.snapshot.playing);
+        assert!(!s.app().music.flipped);
+        assert_eq!(s.app().volume(), volume);
+        assert_eq!(backlight.load(Ordering::Relaxed), brightness);
+    }
 }
 
 #[test]

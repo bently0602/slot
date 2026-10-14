@@ -64,6 +64,11 @@ switch between On and Off. Cover Flow angles and overlaps neighboring carts as y
 scroll. It starts Off, and your choice is saved across restarts for all console shelves.
 On desktop, Menu is **Tab** and the A button is **Z**.
 
+On the slot selection screen, **Menu → Turn Screen Off** blanks the display and
+turns off the handheld backlight while music keeps playing. Press any button to
+restore the screen at its previous brightness; that first press only wakes the
+display. Opening the lid also restores it. Normal lid sleep still applies.
+
 On RG SP with BaseOS, **Menu → Video Out** controls HDMI. **Auto** selects HDMI
 when a cable is connected; **Internal** keeps the built-in screen.
 Choose **720p / 60** (default) or **1080p / 60**, then restart the device to apply
@@ -125,6 +130,12 @@ does not automatically resume music. If a connected headset's audio transport
 cannot open, Slot reports an audio error and retries without sending that audio
 to speakers.
 
+**Turn Bluetooth Off** blocks the Bluetooth radio and stops its services to
+save battery. It preserves pairings and the selected headset, and stays off
+after a restart. **Scan for Headphones** or **Connect** turns it on again.
+Music playing through Bluetooth pauses before shutdown. Desktop previews use
+the computer's Bluetooth settings.
+
 **Disconnect** ends the selected connection and disables reconnect at startup.
 **Forget Headphones** removes its pairing. A successful connection saves the
 address in `Config/bluetooth.txt` and attempts to reconnect at the next device
@@ -165,17 +176,21 @@ Browsing another album leaves the current album playing until you select a track
 | Track panel or full-screen visualizer | L1/R1 previous/next track |
 | Any music screen | Start play/pause; X toggle full-screen visualizer; L2/R2 seek back/forward 10 seconds |
 | Full-screen visualizer | Left/Right choose spectrum bars or waveform; B return |
-| Game shelves | Y return to the loaded album; Start keeps its game core-picker action |
+| Game shelves | Music is paused; Start keeps its game core-picker action |
 
 With no loaded track, Start plays the selected album's first track. Previous
 restarts a track after three seconds; otherwise it follows playback history.
-Music continues while browsing and in menus, and stops before launching a game
-or external app. A footer on game shelves shows the current track and pause state.
+Music continues while browsing albums within Music and in its menus. Switching
+to a game shelf pauses playback and retains the track and position; return to
+Music and press Start to resume. Game artwork has no music status header or
+Now Playing shortcut. Launching a game or external app stops music.
 
 **Menu → Music** provides playback controls, album shuffle, repeat Off/Album/Track,
 visualizer style, **Play With Lid Closed**, and **Rescan Library**. Shuffle visits
 each track once per cycle. Manual skipping overrides Repeat Track. The default
 visualizer is a retro spectrum with falling peaks; the other is a green waveform.
+Opening **Menu → Music** from a game shelf focuses the Music category before
+playback controls can start audio.
 
 Playback/settings are saved atomically in `Config/music.json`, including relative
 album/track paths and position. Normal startup restores the track paused. HDMI
@@ -223,21 +238,37 @@ suspend-to-RAM. BaseOS deep sleep changes SP wake behavior to Power and needs a
 separate wake/timer integration. Physical battery and standby checks are listed
 in [POWER.md](POWER.md).
 
+## Screen effects
+
+Open **Menu → Screen** on the cart shelf to choose a shader for GBA, GB/GBC,
+SNES, or PlayStation. Each offers **Off**, **LCD3x**, **Grid**, **Dot**, and
+**Simpletex**. Choices are saved separately for each system; GB and GBC share
+their setting. Existing preferences are preserved, and SNES and PlayStation
+start with effects Off. The shader shortcuts cycle the active game's setting.
+
 ## Save states
 
 While playing, tap **Menu** to pause and open the state menu. **Save State** and
 **Load State** offer four numbered slots per game and emulator core. Use Up/Down
-to pick a slot and A to save or load it. Slots show **Empty** or **Saved**; saving
-to an occupied slot replaces only that slot. Empty slots cannot be loaded.
+to pick a slot and A to save or load it. Slots show **Empty** or their saved date
+and time, such as **2026-10-14 14:35**, using the device's configured time offset.
+Saving to an occupied slot replaces only that slot. Empty slots cannot be loaded.
 B or **Back** returns to the state menu; another Menu tap resumes the game.
 Press X in the slot picker within 30 seconds to undo the latest save or load,
-including restoring the prior state after an overwrite.
+including restoring the prior state and its saved date after an overwrite.
 
 Existing timestamped saves are preserved under **Load State → Saved History**.
 Choose one with Left/Right and A. Double-tapping Menu still opens this history.
 The Select + R1 (save) and Select + L1 (load newest) shortcuts are unchanged.
 They use the separate history, which keeps the ten most recent states per game.
 On desktop, Menu is **Tab**.
+
+If a save/load state leaves the game stuck, return from the slot picker with B
+and choose **Reset Game** in this menu. An unresponsive emulator snapshot gives
+up after three seconds so the menu can be used again. Reset restarts Slot and
+boots the current game without loading a save state, using its last successfully
+saved in-game data. Existing numbered slots and history stay on the card.
+Progress since the last successful in-game save is lost.
 
 ## Run ahead
 
@@ -246,6 +277,16 @@ The same menu has a **Run Ahead** row. Press A, Left or Right on it to choose
 built into a game by showing the picture one or two frames early. The choice is
 saved for that game only, in `Config/run_ahead.txt`, and applies as soon as the
 menu closes.
+
+Run ahead uses a separate emulator instance for the early picture, so audio
+continues on the main instance without loading a save state every frame. The
+extra instance uses additional memory and is created when run ahead starts.
+If it cannot initialize or accept a state, Slot logs the failure and disables
+run ahead for the current session.
+
+Audio is queued before the extra frames run. Hidden pictures skip rendering when
+the core supports it, including Snes9x, and the speculative instance uses fast
+state restores while normal saves remain portable.
 
 Each frame of run ahead makes the device emulate one extra frame per screen
 refresh, so a demanding game can slow down or crackle. Turn it back down if it
@@ -507,7 +548,7 @@ existing 20 MiB compressed history budget; the available duration depends on the
 game. Captures are skipped if compression falls behind. Loading a state or
 changing discs clears history. Audio is silent while
 rewinding. PS1 rewind performance still needs testing on the handheld.
-PlayStation disables the Game Boy turbo and LCD shader behavior. Analog sticks are
+PlayStation disables the Game Boy turbo behavior. Analog sticks are
 not implemented. The x86 Linux and macOS desktop cores use the interpreter; the ARM64 device core
 uses the recompiler. Performance and game compatibility still need device testing.
 

@@ -186,6 +186,9 @@ fn run_session() -> SessionEnd {
         pacer.wait();
         let began = Instant::now();
         frontend.advance(&mut input);
+        if let Some(reset) = frontend.take_game_reset_request() {
+            slot::system_app::reset_game(&reset);
+        }
         if let Some(root) = frontend.take_device_info_request() {
             // Return first so EGL, audio and evdev close before SDL starts.
             return SessionEnd::DeviceInfo(root);

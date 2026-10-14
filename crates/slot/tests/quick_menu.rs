@@ -36,6 +36,56 @@ fn on_carousel() -> (TempDir, App, Clock) {
     on_carousel_with(SlotState::default())
 }
 
+#[test]
+fn screen_off_blanks_the_shelf_and_wakes_without_activating_a_cart() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let (d, mut a, _) = on_carousel();
+    let (power, backlight) = common::panel(d.path(), Duration::from_secs(180));
+    a.set_power(power);
+    let brightness = a.brightness();
+    let selected = a.selected_stem().unwrap().to_string();
+    open_at(&mut a, QuickRow::ScreenOff);
+    assert!(a.quick_value(QuickRow::ScreenOff).is_none());
+    press(&mut a, Btn::A);
+    assert!(a.screen_off());
+    assert!(matches!(a.phase(), Phase::Shelf));
+    assert_eq!(backlight.load(Ordering::Relaxed), 0);
+    assert_eq!(a.brightness(), brightness);
+    let mut draws = Vec::new();
+    a.draw(&mut draws);
+    assert_eq!(draws.len(), 1);
+    assert!(matches!(
+        draws[0],
+        Draw::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 720.0,
+            h: 480.0,
+            colour: [0.0, 0.0, 0.0, 1.0]
+        }
+    ));
+    press(&mut a, Btn::A);
+    assert!(!a.screen_off());
+    assert!(matches!(a.phase(), Phase::Shelf));
+    assert_eq!(a.selected_stem(), Some(selected.as_str()));
+    assert_eq!(backlight.load(Ordering::Relaxed), brightness);
+    open_at(&mut a, QuickRow::ScreenOff);
+    press(&mut a, Btn::A);
+    a.apply(Action::PowerPress);
+    a.apply(Action::PowerTap);
+    assert!(!a.screen_off());
+    assert!(matches!(a.phase(), Phase::Shelf));
+    open_at(&mut a, QuickRow::ScreenOff);
+    press(&mut a, Btn::A);
+    a.apply(Action::LidClose);
+    assert!(matches!(a.phase(), Phase::Doze { .. }));
+    a.apply(Action::LidOpen);
+    assert!(!a.screen_off());
+    assert_eq!(backlight.load(Ordering::Relaxed), brightness);
+}
+
 fn press(a: &mut App, btn: Btn) {
     a.apply(Action::GbaDown(btn));
     a.apply(Action::GbaUp(btn));
@@ -148,6 +198,7 @@ fn up_and_down_move_the_bar_and_wrap_at_the_ends() {
     );
     for want in [
         QuickRow::Screen,
+        QuickRow::ScreenOff,
         QuickRow::VideoOut,
         QuickRow::Controllers,
         QuickRow::Bluetooth,
@@ -280,6 +331,8 @@ fn screen_opens_a_page_of_its_own_and_b_comes_back_to_it() {
     assert_eq!(a.quick_menu(), Some(QuickRow::GbaShader));
     for want in [
         QuickRow::GbShader,
+        QuickRow::SnesShader,
+        QuickRow::PsxShader,
         QuickRow::ColourCorrection,
         QuickRow::GbPalettes,
         QuickRow::CoverFlow,
@@ -309,7 +362,9 @@ fn each_platform_keeps_its_own_shader_wraps_and_starts_on_grid_and_simpletex() {
     );
     for (btn, want, shown) in [
         (Btn::Right, Shader::Dot, QuickValue::Dot),
+        (Btn::Right, Shader::Simpletex, QuickValue::Simpletex),
         (Btn::Right, Shader::Off, QuickValue::Off),
+        (Btn::Left, Shader::Simpletex, QuickValue::Simpletex),
         (Btn::Left, Shader::Dot, QuickValue::Dot),
         (Btn::Left, Shader::Grid, QuickValue::Grid),
         (Btn::Left, Shader::Lcd3x, QuickValue::Lcd3x),
@@ -326,7 +381,7 @@ fn each_platform_keeps_its_own_shader_wraps_and_starts_on_grid_and_simpletex() {
     assert_eq!(read_slot_state(d.path()).shader_gb, Shader::Simpletex);
     press(&mut a, Btn::Down);
     press(&mut a, Btn::Left);
-    assert_eq!(read_slot_state(d.path()).shader_gb, Shader::Grid);
+    assert_eq!(read_slot_state(d.path()).shader_gb, Shader::Dot);
     assert_eq!(read_slot_state(d.path()).shader_gba, Shader::Off);
 }
 
@@ -346,6 +401,89 @@ fn colour_correction_leaves_the_settings_around_it_alone() {
         ),
         "the row reached a setting that is not its own"
     );
+}
+
+#[test]
+fn all_system_shader_rows_offer_every_effect_and_persist_independently() {
+    let (d, mut app, _) = on_carousel_with(SlotState {
+        shader_gba: Shader::Off,
+        shader_gb: Shader::Off,
+        ..SlotState::default()
+    });
+    for row in [
+        QuickRow::GbaShader,
+        QuickRow::GbShader,
+        QuickRow::SnesShader,
+        QuickRow::PsxShader,
+    ] {
+        let before = read_slot_state(d.path());
+        open_at(&mut app, row);
+        for (button, expected) in [
+            (Btn::Right, QuickValue::Lcd3x),
+            (Btn::Right, QuickValue::Grid),
+            (Btn::Right, QuickValue::Dot),
+            (Btn::Right, QuickValue::Simpletex),
+            (Btn::Right, QuickValue::Off),
+            (Btn::Left, QuickValue::Simpletex),
+            (Btn::Left, QuickValue::Dot),
+            (Btn::Left, QuickValue::Grid),
+            (Btn::Left, QuickValue::Lcd3x),
+            (Btn::Left, QuickValue::Off),
+        ] {
+            press(&mut app, button);
+            assert_eq!(app.quick_value(row), Some(expected), "{row:?}");
+        }
+        assert_eq!(
+            read_slot_state(d.path()),
+            before,
+            "cycling {row:?} changed other preferences"
+        );
+        press(&mut app, Btn::Right);
+        let after = read_slot_state(d.path());
+        let mut want = before;
+        match row {
+            QuickRow::GbaShader => want.shader_gba = Shader::Lcd3x,
+            QuickRow::GbShader => want.shader_gb = Shader::Lcd3x,
+            QuickRow::SnesShader => want.shader_snes = Shader::Lcd3x,
+            QuickRow::PsxShader => want.shader_psx = Shader::Lcd3x,
+            _ => unreachable!(),
+        }
+        assert_eq!(after, want);
+        app.apply(Action::QuickMenu);
+        app.apply(Action::QuickMenu);
+    }
+    let mut rebooted = App::boot(d.path());
+    for platform in slot_store::Platform::ALL {
+        rebooted.set_platform(platform);
+        assert_eq!(rebooted.screen_shader(), Shader::Lcd3x, "{platform:?}");
+    }
+}
+
+#[test]
+fn shader_shortcuts_apply_and_save_on_every_platform() {
+    let (d, mut app, _) = on_carousel();
+    app.apply(Action::Insert);
+    for platform in slot_store::Platform::ALL {
+        app.set_platform(platform);
+        let original = app.screen_shader();
+        let mut expected = original;
+        for action in [Action::ShaderNext, Action::ShaderPrev] {
+            for _ in Shader::ALL {
+                expected = expected.step(&Shader::ALL, action == Action::ShaderNext);
+                app.apply(action);
+                assert_eq!(app.screen_shader(), expected, "{platform:?}: {action:?}");
+                let saved = read_slot_state(d.path());
+                let stored = match platform {
+                    slot_store::Platform::Gba => saved.shader_gba,
+                    slot_store::Platform::Gb | slot_store::Platform::Gbc => saved.shader_gb,
+                    slot_store::Platform::Snes => saved.shader_snes,
+                    slot_store::Platform::Psx => saved.shader_psx,
+                };
+                assert_eq!(stored, expected, "{platform:?} preference did not persist");
+            }
+            assert_eq!(app.screen_shader(), original);
+        }
+    }
 }
 
 #[test]

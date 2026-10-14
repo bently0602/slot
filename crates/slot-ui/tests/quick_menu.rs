@@ -81,6 +81,7 @@ fn the_rows_run_in_the_order_the_user_chose() {
         QuickRow::MAIN.map(QuickRow::label),
         [
             "Screen",
+            "Turn Screen Off",
             "Video Out",
             "Controllers",
             "Bluetooth",
@@ -97,6 +98,8 @@ fn the_rows_run_in_the_order_the_user_chose() {
         [
             "GBA Shader",
             "GB / GBC Shader",
+            "SNES Shader",
+            "PlayStation Shader",
             "Color Correction",
             "GB Palettes",
             "Cover Flow"
@@ -140,6 +143,8 @@ fn the_rows_run_in_the_order_the_user_chose() {
             QuickRow::BluetoothStatus,
             QuickRow::Battery,
             QuickRow::BatteryStatus,
+            QuickRow::ScreenOff,
+            QuickRow::BluetoothOff,
         ]
     );
     for page in [

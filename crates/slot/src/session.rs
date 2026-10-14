@@ -24,6 +24,7 @@ pub struct Session {
     emu: Option<EmuHandle>,
     sink: Box<dyn AudioSink>,
     gestures: Gestures,
+    screen_wake_button: Option<Btn>,
     pad: Pad,
     motor: u16,
     pulse: Option<(Millis, u16)>,
@@ -74,6 +75,7 @@ impl Session {
             emu: None,
             sink,
             gestures: Gestures::new(),
+            screen_wake_button: None,
             pad: Pad::default(),
             motor: 0,
             pulse: None,
@@ -314,6 +316,27 @@ impl Session {
     pub fn feed(&mut self, events: impl IntoIterator<Item = RawEvent>, now: Millis) {
         let mut actions = Vec::new();
         for ev in events {
+            // Consume the full wake press, including delayed Menu and Power gestures.
+            if let Some(button) = self.screen_wake_button {
+                if matches!(ev, RawEvent::Down(b) | RawEvent::Up(b) if b == button) {
+                    if ev == RawEvent::Up(button) {
+                        self.screen_wake_button = None;
+                    }
+                    continue;
+                }
+            }
+            if self.app.screen_off() {
+                if let RawEvent::Down(button) = ev {
+                    if button != Btn::Lid {
+                        self.app.restore_screen();
+                        self.screen_wake_button = Some(button);
+                        self.gestures = Gestures::new();
+                        self.pad.clear();
+                        actions.clear();
+                        continue;
+                    }
+                }
+            }
             if self.controller_paused
                 && ev == RawEvent::Down(Btn::Start)
                 && matches!(self.app.phase(), Phase::Playing { .. })
@@ -365,7 +388,12 @@ impl Session {
             eprintln!("slot: {action:?} in {:?}", self.app.phase());
         }
         let menu = self.overlaid();
+        let screen_off = self.app.screen_off();
         self.bridge_link(|app| app.apply(action));
+        if !screen_off && self.app.screen_off() {
+            self.gestures = Gestures::new();
+            self.pad.clear();
+        }
         self.sync_music();
         if matches!(
             action,
@@ -737,6 +765,13 @@ impl Session {
             )
             || self.app.device_info_requested()
             || self.app.shutting_down();
+        let focused = self.app.shelf_kind == crate::app::ShelfKind::Music;
+        if !focused {
+            self.music_sleep_playing = false;
+            if self.music.snapshot().playing {
+                self.music.sync(Command::Pause);
+            }
+        }
         let commands = std::mem::take(&mut self.app.music.commands);
         for command in commands {
             if matches!(&command, Command::Previous | Command::Next)
@@ -751,11 +786,14 @@ impl Session {
                     | Command::Previous
                     | Command::Next
             );
+            if starts && (forbidden || !focused) {
+                continue;
+            }
             let snapshot = self.music.snapshot();
             if starts && !snapshot.playing && snapshot.error.is_some() {
                 self.music_audio = false;
             }
-            if starts && (forbidden || !self.prepare_music_audio()) {
+            if starts && !self.prepare_music_audio() {
                 continue;
             }
             self.music.sync(command);
@@ -789,7 +827,12 @@ impl Session {
         if sleeping && !self.music_sleeping && self.music_audio {
             self.music_sleep_playing = self.music.snapshot().playing;
             self.music.sync(Command::Pause);
-        } else if !sleeping && self.music_sleeping && self.music_sleep_playing && !forbidden {
+        } else if !sleeping
+            && self.music_sleeping
+            && self.music_sleep_playing
+            && !forbidden
+            && focused
+        {
             if self.prepare_music_audio() {
                 self.music.sync(Command::Toggle);
             }

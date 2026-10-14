@@ -77,6 +77,9 @@ impl ApplicationHandler for Slot {
                 }
                 surface.request_redraw();
                 self.frontend.advance(&mut self.input);
+                if let Some(reset) = self.frontend.take_game_reset_request() {
+                    slot::system_app::reset_game(&reset);
+                }
                 if let Some(root) = self.frontend.take_device_info_request() {
                     self.device_info = Some(root);
                     events.exit();

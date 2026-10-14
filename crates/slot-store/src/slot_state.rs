@@ -34,6 +34,8 @@ pub struct SlotState {
     pub colour_correction: bool,
     pub shader_gba: Shader,
     pub shader_gb: Shader,
+    pub shader_snes: Shader,
+    pub shader_psx: Shader,
     pub eject_save: bool,
     pub turbo: bool,
     pub rewind: bool,
@@ -137,8 +139,13 @@ pub enum Shader {
 }
 
 impl Shader {
-    pub const GBA: [Shader; 4] = [Shader::Off, Shader::Lcd3x, Shader::Grid, Shader::Dot];
-    pub const GB: [Shader; 3] = [Shader::Off, Shader::Grid, Shader::Simpletex];
+    pub const ALL: [Shader; 5] = [
+        Shader::Off,
+        Shader::Lcd3x,
+        Shader::Grid,
+        Shader::Dot,
+        Shader::Simpletex,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -151,15 +158,7 @@ impl Shader {
     }
 
     pub fn parse(name: &str) -> Option<Shader> {
-        [
-            Shader::Off,
-            Shader::Lcd3x,
-            Shader::Grid,
-            Shader::Dot,
-            Shader::Simpletex,
-        ]
-        .into_iter()
-        .find(|s| s.name() == name)
+        Self::ALL.into_iter().find(|s| s.name() == name)
     }
 
     pub fn step(self, choices: &[Shader], right: bool) -> Shader {
@@ -192,6 +191,8 @@ impl Default for SlotState {
             colour_correction: false,
             shader_gba: Shader::Grid,
             shader_gb: Shader::Simpletex,
+            shader_snes: Shader::Off,
+            shader_psx: Shader::Off,
             eject_save: true,
             turbo: true,
             rewind: true,
@@ -249,6 +250,11 @@ pub fn write_slot_state(root: &Path, s: &SlotState) -> std::io::Result<()> {
         s.gb_palette.core_name()
     );
     text.push_str(&format!(
+        "shader_snes={}\nshader_psx={}\n",
+        s.shader_snes.name(),
+        s.shader_psx.name()
+    ));
+    text.push_str(&format!(
         "hdmi_auto={}\nhdmi_1080p={}\nhdmi_scale={}\nhdmi_margin={}\n",
         s.hdmi_auto as u8,
         s.hdmi_1080p as u8,
@@ -285,6 +291,8 @@ fn parse(text: &str) -> Option<SlotState> {
     let mut colour_correction = None;
     let mut shader_gba = None;
     let mut shader_gb = None;
+    let mut shader_snes = None;
+    let mut shader_psx = None;
     let mut eject_save = None;
     let mut turbo = None;
     let mut rewind = None;
@@ -318,7 +326,9 @@ fn parse(text: &str) -> Option<SlotState> {
             "ff_speed" => ff_speed = ff_speed_value(value),
             "ff_sound" => ff_sound = flag(value),
             "colour_correction" => colour_correction = flag(value),
-            "shader_gba" => shader_gba = Shader::parse(value).filter(|s| Shader::GBA.contains(s)),
+            "shader_gba" => shader_gba = Shader::parse(value),
+            "shader_snes" => shader_snes = Shader::parse(value),
+            "shader_psx" => shader_psx = Shader::parse(value),
             "eject_save" => eject_save = flag(value),
             "turbo" => turbo = flag(value),
             "rewind" => rewind = flag(value),
@@ -333,7 +343,7 @@ fn parse(text: &str) -> Option<SlotState> {
             "hdmi_scale" => hdmi_scale = HdmiScale::parse(value),
             "hdmi_margin" => hdmi_margin = level(value, 10).filter(|n| [0, 5, 10].contains(n)),
             "gb_palette" => gb_palette = GbPalette::parse(value),
-            "shader_gb" => shader_gb = Shader::parse(value).filter(|s| Shader::GB.contains(s)),
+            "shader_gb" => shader_gb = Shader::parse(value),
             _ => {}
         }
     }
@@ -356,6 +366,8 @@ fn parse(text: &str) -> Option<SlotState> {
         colour_correction: colour_correction.unwrap_or(fallback.colour_correction),
         shader_gba: shader_gba.unwrap_or(fallback.shader_gba),
         shader_gb: shader_gb.unwrap_or(fallback.shader_gb),
+        shader_snes: shader_snes.unwrap_or(fallback.shader_snes),
+        shader_psx: shader_psx.unwrap_or(fallback.shader_psx),
         eject_save: eject_save.unwrap_or(fallback.eject_save),
         turbo: turbo.unwrap_or(fallback.turbo),
         rewind: rewind.unwrap_or(fallback.rewind),

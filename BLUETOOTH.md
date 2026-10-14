@@ -17,6 +17,14 @@ explicit disconnect, command errors/timeouts, disconnect monitoring, headphone
 volume/mute, menu navigation, routing precedence and music pause on Bluetooth
 loss with HDMI available. Desktop builds never start Bluetooth services.
 
+Turn Bluetooth Off blocks the Bluetooth radio with rfkill, stops BlueALSA and
+BlueZ, terminates the UART attachment, and clears the vendor attachment lock
+so Scan/Connect can initialize it again. Pairing keys and the remembered headset
+stay intact. `Config/bluetooth-off.txt` suppresses startup reconnect and reapplies
+shutdown on device boot. Off requests wait behind pending startup operations.
+Automated shutdown-helper checks use fake firmware commands and never access
+the host radio: `sh tests/test-bluetooth-off.sh`.
+
 ## Hardware acceptance (pending)
 
 - Rebuild with `bash setup-device.sh` and merge the generated System directory
@@ -33,6 +41,11 @@ loss with HDMI available. Desktop builds never start Bluetooth services.
   should pause and stay paused after reconnect. Test with a wired jack inserted.
 - Disconnect, reboot and confirm no automatic reconnect; Connect, reboot and
   confirm the saved headset reconnects. Forget and confirm BlueZ removes its bond.
+- Choose Turn Bluetooth Off while connected, disconnected and scanning. Confirm
+  the radio is blocked, Bluetooth daemons/UART attachment stop, music on Bluetooth
+  pauses, and Wi-Fi still works. Reboot to check it stays off, then use Scan or
+  Connect to bring the radio and audio back without losing pairings. Measure
+  idle power on the handheld before and after shutdown.
 - Check lid playback, power-button suspend/resume, HDMI frontend restart and
   recovery when the firmware radio or audio daemon is unavailable. Measure game
   audio latency on the actual headset; A2DP latency depends on the transport.

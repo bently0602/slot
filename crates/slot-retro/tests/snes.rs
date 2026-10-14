@@ -38,6 +38,21 @@ fn snes_homebrew_video_audio_two_ports_multitap_states_sram_and_pal() {
             ButtonMask(ButtonMask::A),
             ButtonMask(ButtonMask::R),
         ];
+        let hidden_picture = core.video_xrgb8888().to_vec();
+        core.set_frame_skip(true);
+        for _ in 0..10 {
+            core.run_frame_pads(pads);
+        }
+        assert_eq!(
+            core.video_xrgb8888(),
+            hidden_picture,
+            "hidden frames were rendered"
+        );
+        assert!(
+            !core.take_audio().is_empty(),
+            "hidden video stopped the audio clock"
+        );
+        core.set_frame_skip(false);
         for _ in 0..10 {
             core.run_frame_pads(pads);
         }

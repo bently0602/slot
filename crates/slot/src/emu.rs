@@ -33,6 +33,9 @@ const SNAPSHOT_EVERY: u32 = 2;
 
 const STALL: Duration = Duration::from_millis(25);
 
+// A core stuck in serialization must not keep the recovery menu inaccessible.
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(3);
+
 const RATE_WINDOW: u32 = 300;
 
 const TRACE_EVERY: u64 = 300;
@@ -442,19 +445,19 @@ impl Snapshot for EmuSnapshot {
     fn state(&self) -> Option<Vec<u8>> {
         let (tx, rx) = channel();
         request(&self.cmds, &self.shared, Cmd::Save(tx)).then_some(())?;
-        rx.recv().ok()
+        snapshot_reply(rx)
     }
 
     fn save_ram(&self) -> Option<Vec<u8>> {
         let (tx, rx) = channel();
         request(&self.cmds, &self.shared, Cmd::Sav(tx)).then_some(())?;
-        rx.recv().ok().flatten()
+        snapshot_reply(rx).flatten()
     }
 
     fn thumb(&self) -> Option<Vec<u8>> {
         let (tx, rx) = channel();
         request(&self.cmds, &self.shared, Cmd::Thumb(tx)).then_some(())?;
-        rx.recv().ok().flatten()
+        snapshot_reply(rx).flatten()
     }
 
     fn load(&self, state: Vec<u8>) {
@@ -467,6 +470,16 @@ impl Snapshot for EmuSnapshot {
 
     fn save_ram_trusted(&self) -> bool {
         !self.shared.sav_refused.load(Ordering::Acquire)
+    }
+}
+
+fn snapshot_reply<T>(reply: Receiver<T>) -> Option<T> {
+    match reply.recv_timeout(SNAPSHOT_TIMEOUT) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!("slot: emulator snapshot: {error}; use Menu > Reset Game to recover");
+            None
+        }
     }
 }
 
@@ -605,6 +618,8 @@ impl Worker {
         let mut turbo_frame = 0u32;
         let mut ahead_refused = false;
         let mut ahead_state = Vec::new();
+        let mut ahead_core: Option<Box<dyn RetroCore>> = None;
+        let mut ahead_picture = false;
         let mut frame_credit = 0.0;
         let mut transport: Option<Box<dyn LinkChannel>> = None;
         let mut cable: Option<Cable> = None;
@@ -616,9 +631,13 @@ impl Worker {
         let mut ff = (0u32, 0u32, Duration::ZERO, Instant::now());
         while !self.shared.stop.load(Ordering::Relaxed) {
             for cmd in self.cmds.try_iter() {
+                if matches!(cmd, Cmd::SetOption(..) | Cmd::ControllerPort(..)) {
+                    ahead_core = None;
+                }
                 self.apply(
                     cmd,
                     core.as_mut(),
+                    ahead_core.as_deref().filter(|_| ahead_picture),
                     &mut transport,
                     &mut cable,
                     &link,
@@ -732,6 +751,7 @@ impl Worker {
                                 core.set_frame_skip(false);
                                 core.run_frame_pads([ButtonMask(0); 4]);
                                 self.publish(core.video_xrgb8888());
+                                ahead_picture = false;
                             }
                             Err(e) => {
                                 eprintln!("slot: rewind: {e}, clearing history");
@@ -753,7 +773,7 @@ impl Worker {
                 }
                 let ceiling = ceiling * span;
                 let budget = one + PRESENT * (span - 1);
-                let ahead = if speed == Speed::Normal
+                let mut ahead = if speed == Speed::Normal
                     && transport.is_none()
                     && self.player.is_none()
                     && !ahead_refused
@@ -762,6 +782,19 @@ impl Worker {
                 } else {
                     0
                 };
+                if self.shared.run_ahead.load(Ordering::Relaxed) == 0 || transport.is_some() {
+                    ahead_core = None;
+                }
+                if ahead > 0 && ahead_core.is_none() {
+                    match core.run_ahead_instance() {
+                        Ok(secondary) => ahead_core = Some(secondary),
+                        Err(e) => {
+                            eprintln!("slot: run ahead: {e}, turning it off");
+                            ahead_refused = true;
+                            ahead = 0;
+                        }
+                    }
+                }
                 let began = Instant::now();
                 let mut ran = 0u32;
                 let (mut skipped, mut drawn) = (None::<Duration>, Duration::ZERO);
@@ -825,12 +858,48 @@ impl Worker {
                         break;
                     }
                 }
-                // Run ahead: the frames above are the real ones and were not drawn. Show the
-                // picture a few frames on with the same buttons held, then put the core back.
-                let (mut real_audio, mut ran_ahead) = (None, false);
-                if ahead > 0 {
-                    real_audio = Some(core.take_audio());
-                    match core.serialize_into(&mut ahead_state) {
+                let mut deliver_audio = |audio: Vec<i16>| {
+                    if speed == Speed::Normal || ff_sound {
+                        let target = drc_target(ring.capacity_frames());
+                        let queued = ring.queued_frames();
+                        if lock && scale == 0.0 {
+                            scale = self.shared.present_ns.load(Ordering::Relaxed) as f64
+                                / PRESENT.as_nanos() as f64;
+                        }
+                        let base = if lock { scale } else { 1.0 };
+                        resampler.set_ratio(
+                            drc_ratio(queued, target) * base * f64::from(span) / f64::from(ran),
+                        );
+                        resampler.process(&audio, &mut out);
+                        crate::audio::volume::apply(
+                            &mut out,
+                            self.shared.volume.load(Ordering::Relaxed),
+                        );
+                        ring.push_blocking(&out);
+                        paced += 1;
+                        if crate::session::trace() && paced.is_multiple_of(TRACE_EVERY) {
+                            let (dropped, starved) = (ring.overruns(), ring.underruns());
+                            eprintln!(
+                                "slot: audio: {queued}/{target} queued, {dropped} dropped, {starved} starved, locked {lock} at {scale:.5}"
+                            );
+                        }
+                    }
+                };
+                // Feed the device before speculative work can delay available sound.
+                // The audible core still advances continuously, without state loads.
+                let audio_time = if ahead > 0 {
+                    let audio_began = Instant::now();
+                    deliver_audio(core.take_audio());
+                    audio_began.elapsed()
+                } else {
+                    Duration::ZERO
+                };
+                let mut ran_ahead = false;
+                if let Some(secondary) = ahead_core.as_mut().filter(|_| ahead > 0) {
+                    match core
+                        .serialize_into(&mut ahead_state)
+                        .and_then(|()| secondary.unserialize(&ahead_state))
+                    {
                         Ok(()) => {
                             for n in 0..ahead {
                                 let input = self.pad(
@@ -838,12 +907,12 @@ impl Worker {
                                     core.full_joypad(),
                                     turbo_frame.wrapping_add(n),
                                 );
-                                core.set_frame_skip(n + 1 < ahead);
+                                secondary.set_frame_skip(n + 1 < ahead);
                                 let frame_began = Instant::now();
                                 match core.full_joypad() {
-                                    true => core
+                                    true => secondary
                                         .run_frame_pads([input, others[0], others[1], others[2]]),
-                                    false => core.run_frame(input),
+                                    false => secondary.run_frame(input),
                                 }
                                 let took = frame_began.elapsed();
                                 if n + 1 < ahead {
@@ -852,12 +921,8 @@ impl Worker {
                                     drawn = took;
                                 }
                             }
-                            self.publish(core.video_xrgb8888());
-                            let _ = core.take_audio();
-                            if let Err(e) = core.unserialize(&ahead_state) {
-                                eprintln!("slot: run ahead: {e}, turning it off");
-                                ahead_refused = true;
-                            }
+                            self.publish(secondary.video_xrgb8888());
+                            let _ = secondary.take_audio();
                             ran_ahead = true;
                         }
                         Err(e) => {
@@ -866,7 +931,10 @@ impl Worker {
                         }
                     }
                 }
-                let core_time = began.elapsed();
+                if ahead_refused {
+                    ahead_core = None;
+                }
+                let core_time = began.elapsed().saturating_sub(audio_time);
                 cost.measured(skipped, drawn);
                 if cable.is_some() {
                     cable_presents += 1;
@@ -911,6 +979,7 @@ impl Worker {
                 if !ran_ahead {
                     self.publish(core.video_xrgb8888());
                 }
+                ahead_picture = ran_ahead;
                 self.frame_done(served);
 
                 if !core.full_joypad() && speed == Speed::Normal && transport.is_none() && recording
@@ -941,31 +1010,8 @@ impl Worker {
                     }
                 }
 
-                let audio = real_audio.unwrap_or_else(|| core.take_audio());
-                if speed == Speed::Normal || ff_sound {
-                    let target = drc_target(ring.capacity_frames());
-                    let queued = ring.queued_frames();
-                    if lock && scale == 0.0 {
-                        scale = self.shared.present_ns.load(Ordering::Relaxed) as f64
-                            / PRESENT.as_nanos() as f64;
-                    }
-                    let base = if lock { scale } else { 1.0 };
-                    resampler.set_ratio(
-                        drc_ratio(queued, target) * base * f64::from(span) / f64::from(ran),
-                    );
-                    resampler.process(&audio, &mut out);
-                    crate::audio::volume::apply(
-                        &mut out,
-                        self.shared.volume.load(Ordering::Relaxed),
-                    );
-                    ring.push_blocking(&out);
-                    paced += 1;
-                    if crate::session::trace() && paced.is_multiple_of(TRACE_EVERY) {
-                        let (dropped, starved) = (ring.overruns(), ring.underruns());
-                        eprintln!(
-                            "slot: audio: {queued}/{target} queued, {dropped} dropped, {starved} starved, locked {lock} at {scale:.5}"
-                        );
-                    }
+                if ahead == 0 {
+                    deliver_audio(core.take_audio());
                 }
             }
 
@@ -987,9 +1033,13 @@ impl Worker {
                         }
                         Wait::Request => {
                             for cmd in self.cmds.try_iter() {
+                                if matches!(cmd, Cmd::SetOption(..) | Cmd::ControllerPort(..)) {
+                                    ahead_core = None;
+                                }
                                 self.apply(
                                     cmd,
                                     core.as_mut(),
+                                    ahead_core.as_deref().filter(|_| ahead_picture),
                                     &mut transport,
                                     &mut cable,
                                     &link,
@@ -1020,6 +1070,7 @@ impl Worker {
             self.apply(
                 cmd,
                 core.as_mut(),
+                ahead_core.as_deref().filter(|_| ahead_picture),
                 &mut transport,
                 &mut cable,
                 &link,
@@ -1034,10 +1085,12 @@ impl Worker {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply(
         &self,
         cmd: Cmd,
         core: &mut dyn RetroCore,
+        picture: Option<&dyn RetroCore>,
         transport: &mut Option<Box<dyn LinkChannel>>,
         cable: &mut Option<Cable>,
         link: &Link,
@@ -1093,7 +1146,9 @@ impl Worker {
                 let _ = reply.send(core.save_ram());
             }
             Cmd::Thumb(reply) => {
-                let _ = reply.send(crate::thumb::png(core.video_xrgb8888()));
+                // Run-ahead skips the primary picture; capture the frame being shown.
+                let video = picture.unwrap_or(&*core).video_xrgb8888();
+                let _ = reply.send(crate::thumb::png(video));
             }
             Cmd::BeginLink(client_id, t) => {
                 self.shared.link_lost.store(false, Ordering::Relaxed);

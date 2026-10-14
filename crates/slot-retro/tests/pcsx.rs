@@ -143,6 +143,23 @@ fn homebrew_video_memory_card_and_multi_disc_resume() {
     assert!(core.change_disc(2).is_err());
     assert_eq!(core.discs(), (1, 2));
     let state = core.serialize().unwrap();
+    // Run-ahead's second instance must mount the saved disc while keeping the
+    // primary's picture and memory card untouched.
+    let primary_frame = core.video_xrgb8888().to_vec();
+    let primary_card = core.save_ram().unwrap();
+    let mut speculative = core.run_ahead_instance().unwrap();
+    for ahead in [1, 2] {
+        speculative.unserialize(&state).unwrap();
+        for _ in 0..ahead {
+            speculative.run_frame_pads([ButtonMask(0); 4]);
+        }
+        speculative.take_audio();
+        assert_eq!(speculative.discs(), (1, 2));
+        assert_eq!(core.discs(), (1, 2));
+        assert_eq!(core.video_xrgb8888(), primary_frame);
+        assert_eq!(core.save_ram().unwrap(), primary_card);
+    }
+    drop(speculative);
     core.change_disc(0).unwrap();
     core.unserialize(&state).unwrap();
     assert_eq!(

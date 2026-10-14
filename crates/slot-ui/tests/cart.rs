@@ -740,9 +740,10 @@ fn every_mould_is_lettered_with_its_platform() {
                 .map(|c| u32::from(*c))
                 .sum::<u32>()
         };
-        let base = lum(plain);
-        let band: Vec<u32> = rows
-            .flat_map(|y| (60..180).map(move |x| (x, y)))
+        let scaled = |pixel: u32| (pixel * 9 + 5) / 10;
+        let base = lum((scaled(plain.0), scaled(plain.1)));
+        let band: Vec<u32> = (scaled(rows.start)..scaled(rows.end))
+            .flat_map(|y| (scaled(60)..scaled(180)).map(move |x| (x, y)))
             .map(lum)
             .collect();
         assert!(

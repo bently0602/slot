@@ -62,3 +62,62 @@ pub fn buttons(ram: &[u8], player: usize) -> u16 {
         (held << 1) | u16::from((byte >> bit) & 1)
     })
 }
+
+// Original SPC700 homebrew: upload a DSP noise generator through the IPL ports.
+// Noise makes each sample sensitive to the audio timeline without external assets.
+#[allow(dead_code)]
+pub fn audio_rom() -> Vec<u8> {
+    let mut spc = Vec::new();
+    for (reg, value) in [
+        (0x6c, 0x3c),
+        (0x0c, 0x60),
+        (0x1c, 0x60),
+        (0x00, 0x60),
+        (0x01, 0x60),
+        (0x05, 0),
+        (0x07, 0x7f),
+        (0x3d, 1),
+        (0x4c, 1),
+    ] {
+        spc.extend([0x8f, reg, 0xf2, 0x8f, value, 0xf3]);
+    }
+    spc.extend([0x2f, 0xfe]);
+    let mut code = vec![0x78, 0x18, 0xfb, 0xe2, 0x30, 0xa2, 0xff, 0x9a];
+    fn write(code: &mut Vec<u8>, address: u16, value: u8) {
+        code.extend([0xa9, value, 0x8d, address as u8, (address >> 8) as u8]);
+    }
+    fn wait(code: &mut Vec<u8>, value: u8) {
+        code.extend([0xad, 0x40, 0x21, 0xc9, value, 0xd0, 0xf9]);
+    }
+    write(&mut code, 0x2100, 0x80);
+    wait(&mut code, 0xaa);
+    for (address, value) in [(0x2142, 0), (0x2143, 2), (0x2141, 1), (0x2140, 0xcc)] {
+        write(&mut code, address, value);
+    }
+    wait(&mut code, 0xcc);
+    for (index, value) in spc.iter().copied().enumerate() {
+        write(&mut code, 0x2141, value);
+        write(&mut code, 0x2140, index as u8);
+        wait(&mut code, index as u8);
+    }
+    for (address, value) in [
+        (0x2142, 0),
+        (0x2143, 2),
+        (0x2141, 0),
+        (0x2140, spc.len() as u8 + 1),
+    ] {
+        write(&mut code, address, value);
+    }
+    code.extend([0x80, 0xfe]);
+    let mut result = rom(false, false);
+    result[..0x7fc0].fill(0);
+    result[..code.len()].copy_from_slice(&code);
+    result[0x7fc0..0x7fd5].copy_from_slice(b"SLOT SNES AUDIO TEST ");
+    result[0x7fdc..0x7fe0].fill(0);
+    let checksum = result
+        .iter()
+        .fold(510u16, |sum, &byte| sum.wrapping_add(u16::from(byte)));
+    result[0x7fdc..0x7fde].copy_from_slice(&(!checksum).to_le_bytes());
+    result[0x7fde..0x7fe0].copy_from_slice(&checksum.to_le_bytes());
+    result
+}

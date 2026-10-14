@@ -9,10 +9,11 @@ use crate::silhouette::{
 };
 use crate::text;
 
-pub const CART_W: u32 = 360;
+// Shelf artwork is 10% smaller, preserving each system's relative size and aspect.
+pub const CART_W: u32 = 324;
 pub const CART_H: u32 = (CART_W * SEATED_H + SEATED_W / 2) / SEATED_W;
 
-pub const GB_CART_W: u32 = 312;
+pub const GB_CART_W: u32 = 281;
 
 pub const GB_CART_H: u32 = (GB_CART_W * GB_SEATED_H + SEATED_W / 2) / SEATED_W;
 
@@ -162,10 +163,10 @@ pub fn seated_box(platform: Platform) -> (u32, u32) {
 
 pub fn cart_box(platform: Platform) -> (u32, u32) {
     if platform == Platform::Psx {
-        return (312, 312);
+        return (281, 281);
     }
     if platform == Platform::Snes {
-        return (360, 225);
+        return (324, 203);
     }
     let s = spec(match platform {
         Platform::Gba => Shape::Gba,
@@ -199,10 +200,10 @@ pub fn cart_face(cart: &Cart) -> CartFace {
 
 pub fn label_size(cart: &Cart) -> (u32, u32) {
     if cart.platform == Platform::Psx {
-        return (296, 296);
+        return (266, 266);
     }
     if cart.platform == Platform::Snes {
-        return (240, 146);
+        return (216, 131);
     }
     let (_, _, lw, lh) = spec(shape_of(cart)).label;
     (lw, lh)
@@ -260,13 +261,13 @@ fn snes_face(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
     for y in 0..h {
         for x in 0..w {
             let at = ((y * w + x) * 4) as usize;
-            let rib = (12..44).contains(&x) || (w - 44..w - 12).contains(&x);
+            let rib = (11..40).contains(&x) || (w - 40..w - 11).contains(&x);
             if x < 4
                 || x >= w - 4
                 || y < 4
                 || y >= h - 4
-                || y == h - 22
-                || (rib && (30..h - 30).contains(&y) && y % 12 < 3)
+                || y == h - 20
+                || (rib && (27..h - 27).contains(&y) && y % 11 < 3)
             {
                 for channel in &mut rgba[at..at + 3] {
                     *channel = channel.saturating_sub(35);
@@ -284,7 +285,7 @@ fn snes_face(cart: &Cart, art: Option<Vec<u8>>) -> CartFace {
         }
         label
     });
-    let (left, top) = (((w - lw) / 2) as usize, 24);
+    let (left, top) = (((w - lw) / 2) as usize, 22);
     for y in 0..lh as usize {
         let at = ((y + top) * w as usize + left) * 4;
         rgba[at..at + lw as usize * 4]

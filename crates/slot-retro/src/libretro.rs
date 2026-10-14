@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::marker::PhantomData;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -28,6 +28,8 @@ struct Host {
     disk: Option<DiskControl>,
     format: PixelFormat,
     audio: Vec<i16>,
+    video_enabled: bool,
+    savestate_context: c_int,
     inputs: [u16; 4],
     system_dir: CString,
     save_dir: CString,
@@ -77,6 +79,27 @@ unsafe extern "C" fn set_rumble_state(port: c_uint, effect: c_uint, strength: u1
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
     match cmd {
+        GET_AUDIO_VIDEO_ENABLE | GET_SAVESTATE_CONTEXT => {
+            if data.is_null() {
+                return false;
+            }
+            with_host(|h| {
+                // Hidden video never grants permission to stop advancing audio.
+                // Older cores use the A/V fast-state bit instead of the context query.
+                *(data as *mut c_int) = if cmd == GET_SAVESTATE_CONTEXT {
+                    h.savestate_context
+                } else {
+                    AV_ENABLE_AUDIO
+                        | if h.video_enabled { AV_ENABLE_VIDEO } else { 0 }
+                        | if h.savestate_context != SAVESTATE_CONTEXT_NORMAL {
+                            AV_ENABLE_FAST_SAVESTATES
+                        } else {
+                            0
+                        }
+                };
+            })
+            .is_some()
+        }
         SET_DISK_CONTROL_INTERFACE => {
             if data.is_null() {
                 return false;
@@ -326,6 +349,9 @@ unsafe extern "C" fn video_refresh(
         return;
     }
     with_host(|h| {
+        if !h.video_enabled {
+            return;
+        }
         if h.canvas != (GBA_W, GBA_H) {
             let (cw, ch) = h.canvas;
             if width == 0 || height == 0 || width > 4096 || height > 4096 {
@@ -440,7 +466,13 @@ pub struct LibretroCore {
     av: AvInfo,
     loaded: bool,
     state_size: usize,
+    library_path: PathBuf,
+    loaded_path: Option<PathBuf>,
+    controller_devices: [u32; 4],
+    owns_live: bool,
     _lib: Library,
+    // Declared after the library so the copied binary is removed after dlclose.
+    _instance_dir: Option<tempfile::TempDir>,
 }
 
 fn cdir(path: &Path) -> Result<CString, CoreError> {
@@ -459,6 +491,10 @@ impl LibretroCore {
             return Err(CoreError::Unsupported("a core is already open".into()));
         }
         Self::open_inner(dylib, system_dir, save_dir)
+            .map(|mut core| {
+                core.owns_live = true;
+                core
+            })
             .inspect_err(|_| LIVE.store(false, Ordering::SeqCst))
     }
 
@@ -524,6 +560,8 @@ impl LibretroCore {
             disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
+            video_enabled: true,
+            savestate_context: SAVESTATE_CONTEXT_NORMAL,
             inputs: [0; 4],
             system_dir: cdir(system_dir)?,
             save_dir: cdir(save_dir)?,
@@ -558,7 +596,12 @@ impl LibretroCore {
             },
             loaded: false,
             state_size: 0,
+            library_path: dylib.to_path_buf(),
+            loaded_path: None,
+            controller_devices: [DEVICE_JOYPAD, 0, 0, 0],
+            owns_live: false,
             _lib: lib,
+            _instance_dir: None,
         })
     }
 
@@ -576,6 +619,7 @@ impl LibretroCore {
         unsafe { (self.api.unload_game)() };
         self.loaded = false;
         self.state_size = 0;
+        self.loaded_path = None;
     }
 
     fn memory(&self, id: c_uint) -> Option<&[u8]> {
@@ -604,7 +648,9 @@ impl Drop for LibretroCore {
             let _a = Active::bind(&mut self.host);
             (self.api.deinit)();
         }
-        LIVE.store(false, Ordering::SeqCst);
+        if self.owns_live {
+            LIVE.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -650,6 +696,9 @@ impl RetroCore for LibretroCore {
         LibretroCore::set_option(self, key, value);
     }
     fn set_controller_port_device(&mut self, port: u32, device: u32) {
+        if let Some(selected) = self.controller_devices.get_mut(port as usize) {
+            *selected = device;
+        }
         let _a = Active::bind(&mut self.host);
         unsafe { (self.api.set_controller_port_device)(port, device) };
     }
@@ -716,6 +765,7 @@ impl RetroCore for LibretroCore {
             return Err(CoreError::Load(format!("core refused {}", rom.display())));
         }
         self.loaded = true;
+        self.loaded_path = Some(rom);
         let mut av = SystemAvInfo::default();
         unsafe { (self.api.get_system_av_info)(&mut av) };
         self.av = AvInfo {
@@ -754,6 +804,7 @@ impl RetroCore for LibretroCore {
     }
 
     fn set_frame_skip(&mut self, skip: bool) {
+        self.host.video_enabled = !skip;
         let _a = Active::bind(&mut self.host);
         unsafe { report_audio_status(skip) };
     }
@@ -764,6 +815,35 @@ impl RetroCore for LibretroCore {
 
     fn take_audio(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.host.audio)
+    }
+
+    fn run_ahead_instance(&self) -> Result<Box<dyn RetroCore>, CoreError> {
+        let rom = self
+            .loaded_path
+            .as_ref()
+            .ok_or_else(|| CoreError::Load("run ahead requires a loaded ROM".into()))?;
+        let directory = tempfile::Builder::new()
+            .prefix("slot-runahead-")
+            .tempdir()?;
+        let library = directory.path().join(
+            self.library_path
+                .file_name()
+                .ok_or_else(|| CoreError::Load("core library has no filename".into()))?,
+        );
+        // dlopen of the same path reuses the original core's global variables.
+        // A separate file gives the speculative core its own emulator state.
+        std::fs::copy(&self.library_path, &library)?;
+        let system_dir = PathBuf::from(self.host.system_dir.to_string_lossy().as_ref());
+        let mut secondary = Self::open_inner(&library, &system_dir, directory.path())?;
+        secondary._instance_dir = Some(directory);
+        secondary.host.options = self.host.options.clone();
+        secondary.host.options_dirty = true;
+        secondary.set_video_canvas(self.host.canvas.0, self.host.canvas.1);
+        secondary.load(rom)?;
+        for (port, device) in self.controller_devices.iter().copied().enumerate() {
+            secondary.set_controller_port_device(port as u32, device);
+        }
+        Ok(Box::new(secondary))
     }
 
     fn serialize(&mut self) -> Result<Vec<u8>, CoreError> {
@@ -829,10 +909,16 @@ impl RetroCore for LibretroCore {
         } else {
             data
         };
+        // Only the independent speculative instance gets fast restores. Primary
+        // serialization stays portable so the same state can enter rewind/save slots.
+        if self._instance_dir.is_some() {
+            self.host.savestate_context = SAVESTATE_CONTEXT_RUNAHEAD_SAME_BINARY;
+        }
         let ok = {
             let _a = Active::bind(&mut self.host);
             unsafe { (self.api.unserialize)(data.as_ptr() as *const c_void, data.len()) }
         };
+        self.host.savestate_context = SAVESTATE_CONTEXT_NORMAL;
         if ok {
             Ok(())
         } else {
@@ -904,6 +990,8 @@ mod tests {
             disk: None,
             format: PixelFormat::Xrgb8888,
             audio: Vec::new(),
+            video_enabled: true,
+            savestate_context: SAVESTATE_CONTEXT_NORMAL,
             inputs: [0; 4],
             system_dir: CString::new(".").unwrap(),
             save_dir: CString::new(".").unwrap(),
@@ -934,6 +1022,70 @@ mod tests {
             key: ptr::null(),
             value: ptr::null(),
         }
+    }
+
+    #[test]
+    fn hidden_video_keeps_audio_enabled_and_discarded_callbacks_leave_the_picture_alone() {
+        let mut host = host_with(HashMap::new(), false);
+        for visible in [true, false, true] {
+            host.video_enabled = visible;
+            let old_picture = host.video.clone();
+            let _active = Active::bind(&mut host);
+            let mut enabled = 0;
+            assert!(unsafe {
+                environment(
+                    GET_AUDIO_VIDEO_ENABLE,
+                    &mut enabled as *mut c_int as *mut c_void,
+                )
+            });
+            assert_eq!(
+                enabled,
+                AV_ENABLE_AUDIO | if visible { AV_ENABLE_VIDEO } else { 0 }
+            );
+            let pixel = 0x00123456u32;
+            unsafe { video_refresh(&pixel as *const u32 as *const c_void, 1, 1, 4) };
+            drop(_active);
+            if !visible {
+                assert_eq!(host.video, old_picture);
+            }
+        }
+    }
+
+    #[test]
+    fn savestate_context_and_legacy_fast_bit_agree_without_disabling_audio() {
+        let mut host = host_with(HashMap::new(), false);
+        for context in [
+            SAVESTATE_CONTEXT_NORMAL,
+            SAVESTATE_CONTEXT_RUNAHEAD_SAME_BINARY,
+            SAVESTATE_CONTEXT_NORMAL,
+        ] {
+            host.savestate_context = context;
+            let _active = Active::bind(&mut host);
+            let mut reported = -1;
+            let mut enabled = 0;
+            assert!(unsafe {
+                environment(
+                    GET_SAVESTATE_CONTEXT,
+                    &mut reported as *mut c_int as *mut c_void,
+                )
+            });
+            assert!(unsafe {
+                environment(
+                    GET_AUDIO_VIDEO_ENABLE,
+                    &mut enabled as *mut c_int as *mut c_void,
+                )
+            });
+            assert_eq!(reported, context);
+            let fast = if context == SAVESTATE_CONTEXT_NORMAL {
+                0
+            } else {
+                AV_ENABLE_FAST_SAVESTATES
+            };
+            assert_eq!(enabled, AV_ENABLE_VIDEO | AV_ENABLE_AUDIO | fast);
+        }
+        let _active = Active::bind(&mut host);
+        assert!(!unsafe { environment(GET_AUDIO_VIDEO_ENABLE, ptr::null_mut()) });
+        assert!(!unsafe { environment(GET_SAVESTATE_CONTEXT, ptr::null_mut()) });
     }
 
     #[test]

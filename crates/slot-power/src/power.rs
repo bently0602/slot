@@ -6,6 +6,7 @@ pub struct Power {
     platform: Box<dyn Platform>,
     level: u8,
     closed: bool,
+    screen_off: bool,
     timeout: Duration,
 }
 
@@ -15,15 +16,22 @@ impl Power {
             platform,
             level: 0,
             closed: false,
+            screen_off: false,
             timeout,
         }
     }
 
     pub fn set_backlight(&mut self, step: u8) {
         self.level = step;
-        if !self.closed {
+        if !self.closed && !self.screen_off {
             self.platform.set_backlight(step);
         }
+    }
+
+    pub fn set_screen_off(&mut self, off: bool) {
+        self.screen_off = off;
+        self.platform
+            .set_backlight(if off || self.closed { 0 } else { self.level });
     }
 
     pub fn battery(&self) -> Option<Battery> {
@@ -83,7 +91,8 @@ impl LidPolicy for Power {
 
     fn on_open(&mut self) {
         self.closed = false;
-        self.platform.set_backlight(self.level);
+        self.platform
+            .set_backlight(if self.screen_off { 0 } else { self.level });
     }
 
     fn timeout(&self) -> Duration {

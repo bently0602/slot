@@ -14,6 +14,8 @@ pub enum QuickRow {
     About,
     GbaShader,
     GbShader,
+    SnesShader,
+    PsxShader,
     ColourCorrection,
     Game,
     EjectSave,
@@ -57,10 +59,12 @@ pub enum QuickRow {
     BatteryStatus,
     SleepShutdown,
     ShutdownCharging,
+    ScreenOff,
+    BluetoothOff,
 }
 
 impl QuickRow {
-    pub const ALL: [QuickRow; 51] = [
+    pub const ALL: [QuickRow; 55] = [
         QuickRow::FastForward,
         QuickRow::FastForwardSound,
         QuickRow::Screen,
@@ -69,6 +73,8 @@ impl QuickRow {
         QuickRow::About,
         QuickRow::GbaShader,
         QuickRow::GbShader,
+        QuickRow::SnesShader,
+        QuickRow::PsxShader,
         QuickRow::ColourCorrection,
         QuickRow::Game,
         QuickRow::EjectSave,
@@ -112,10 +118,13 @@ impl QuickRow {
         QuickRow::BatteryStatus,
         QuickRow::SleepShutdown,
         QuickRow::ShutdownCharging,
+        QuickRow::ScreenOff,
+        QuickRow::BluetoothOff,
     ];
 
-    pub const MAIN: [QuickRow; 10] = [
+    pub const MAIN: [QuickRow; 11] = [
         QuickRow::Screen,
+        QuickRow::ScreenOff,
         QuickRow::VideoOut,
         QuickRow::Controllers,
         QuickRow::Bluetooth,
@@ -127,9 +136,11 @@ impl QuickRow {
         QuickRow::About,
     ];
 
-    pub const SCREEN: [QuickRow; 5] = [
+    pub const SCREEN: [QuickRow; 7] = [
         QuickRow::GbaShader,
         QuickRow::GbShader,
+        QuickRow::SnesShader,
+        QuickRow::PsxShader,
         QuickRow::ColourCorrection,
         QuickRow::GbPalettes,
         QuickRow::CoverFlow,
@@ -188,7 +199,8 @@ impl QuickRow {
             | QuickRow::BluetoothConnect
             | QuickRow::BluetoothDisconnect
             | QuickRow::BluetoothForget
-            | QuickRow::BluetoothStatus => &QuickRow::BLUETOOTH,
+            | QuickRow::BluetoothStatus
+            | QuickRow::BluetoothOff => &QuickRow::BLUETOOTH,
             QuickRow::MusicPlay
             | QuickRow::MusicPrevious
             | QuickRow::MusicNext
@@ -212,6 +224,8 @@ impl QuickRow {
             | QuickRow::AudioOutput => &QuickRow::VIDEO,
             QuickRow::GbaShader
             | QuickRow::GbShader
+            | QuickRow::SnesShader
+            | QuickRow::PsxShader
             | QuickRow::ColourCorrection
             | QuickRow::GbPalettes
             | QuickRow::CoverFlow => &QuickRow::SCREEN,
@@ -257,11 +271,13 @@ impl QuickRow {
 
     pub fn label(self) -> &'static str {
         match self {
+            QuickRow::ScreenOff => "Turn Screen Off",
             QuickRow::Battery => "Battery",
             QuickRow::BatteryStatus => "Status",
             QuickRow::SleepShutdown => "Sleep to Shutdown",
             QuickRow::ShutdownCharging => "While Charging",
             QuickRow::Bluetooth => "Bluetooth",
+            QuickRow::BluetoothOff => "Turn Bluetooth Off",
             QuickRow::BluetoothScan => "Scan for Headphones",
             QuickRow::BluetoothSelect => "Headphones",
             QuickRow::BluetoothConnect => "Connect",
@@ -286,6 +302,8 @@ impl QuickRow {
             QuickRow::DeviceInfo => "Device Info",
             QuickRow::GbaShader => "GBA Shader",
             QuickRow::GbShader => "GB / GBC Shader",
+            QuickRow::SnesShader => "SNES Shader",
+            QuickRow::PsxShader => "PlayStation Shader",
             QuickRow::ColourCorrection => "Color Correction",
             QuickRow::Game => "Gameplay",
             QuickRow::EjectSave => "Auto Save on Eject",
@@ -315,6 +333,8 @@ impl QuickRow {
         matches!(
             self,
             QuickRow::DateTime
+                | QuickRow::ScreenOff
+                | QuickRow::BluetoothOff
                 | QuickRow::Bluetooth
                 | QuickRow::BluetoothScan
                 | QuickRow::BluetoothConnect
@@ -345,12 +365,13 @@ impl QuickRow {
         page[(self.position() + page.len() - 1) % page.len()]
     }
 
-    pub const BLUETOOTH: [QuickRow; 6] = [
+    pub const BLUETOOTH: [QuickRow; 7] = [
         QuickRow::BluetoothScan,
         QuickRow::BluetoothSelect,
         QuickRow::BluetoothConnect,
         QuickRow::BluetoothDisconnect,
         QuickRow::BluetoothForget,
+        QuickRow::BluetoothOff,
         QuickRow::BluetoothStatus,
     ];
 
@@ -517,7 +538,7 @@ impl QuickValue {
 }
 
 pub const QUICK_PITCH: f32 = 52.0;
-pub const QUICK_MAIN_PITCH: f32 = 38.0;
+pub const QUICK_MAIN_PITCH: f32 = 36.0;
 pub const QUICK_TOP: f32 = 24.0;
 pub const QUICK_EDGE: f32 = 32.0;
 const BAR_INSET: f32 = 4.0;
@@ -704,8 +725,10 @@ fn row_top(row: QuickRow) -> f32 {
 }
 
 fn row_pitch(row: QuickRow) -> f32 {
-    if row.page().len() >= 8 {
+    if row.page() == QuickRow::MAIN {
         QUICK_MAIN_PITCH
+    } else if row.page().len() >= 8 {
+        38.0
     } else {
         QUICK_PITCH
     }

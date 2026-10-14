@@ -108,6 +108,13 @@ pub trait RetroCore: Send {
         Ok(())
     }
     fn unserialize(&mut self, data: &[u8]) -> Result<(), CoreError>;
+    /// An independent, loaded instance for speculative video. Never restore
+    /// run-ahead states into the instance that supplies audible samples.
+    fn run_ahead_instance(&self) -> Result<Box<dyn RetroCore>, CoreError> {
+        Err(CoreError::Unsupported(
+            "independent run-ahead instance".into(),
+        ))
+    }
     fn save_ram(&self) -> Option<Vec<u8>>;
     fn load_save_ram(&mut self, data: &[u8]) -> Result<(), CoreError>;
     fn av_info(&self) -> AvInfo;

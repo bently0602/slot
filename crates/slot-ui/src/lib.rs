@@ -15,6 +15,7 @@ mod plate;
 mod players;
 mod polaroids;
 mod power_menu;
+mod psx;
 mod quick_menu;
 mod rebuild;
 mod refusal;
@@ -63,6 +64,7 @@ pub use plate::{
 pub use players::{player_column, player_row, players_face, Seat, PLAYER_COLUMNS, PLAYER_ROWS};
 pub use polaroids::{photo_face, PhotoFace, Polaroids, DOT, LEGEND, PHOTO_H, PHOTO_W};
 pub use power_menu::{menu_face, PowerChoice, MENU_PAD};
+pub use psx::{psx_parts, PsxTextures};
 pub use quick_menu::{
     quick_bluetooth_value_face, quick_caret_face, quick_label_face, quick_legend_faces,
     quick_value_face, QuickMenu, QuickMenuFaces, QuickRow, QuickValue, QUICK_EDGE,
